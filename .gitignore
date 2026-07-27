@@ -1,0 +1,82 @@
+# ---- Build output ----
+build/
+out/
+bin/
+lib/
+Debug/
+Release/
+x64/
+x86/
+[Dd]ebug/
+[Rr]elease/
+*.o
+*.obj
+*.exe
+*.dll
+*.lib
+*.a
+*.pdb
+*.ilk
+*.exp
+*.idb
+
+# ---- CMake ----
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.cmake
+CTestTestfile.cmake
+_deps/
+*.cmake.stamp
+
+# ---- Visual Studio ----
+.vs/
+*.sln.docstates
+*.suo
+*.user
+*.userosscache
+*.sln.iml
+*.vcxproj.user
+*.VC.db
+*.VC.opendb
+ipch/
+*.aps
+*.ncb
+*.opensdf
+*.sdf
+*.cachefile
+
+# ---- Visual Studio Code ----
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# ---- JetBrains (CLion) ----
+.idea/
+cmake-build-*/
+
+# ---- Dependencies (if vendored binaries) ----
+# Keep source of libs if committed; ignore prebuilt archives
+*.zip
+*.7z
+*.tar.gz
+
+# ---- Assets / captures (optional, decommenta se pesanti) ----
+# assets/**/*.fbx
+# captures/
+# *.mp4
+
+# ---- Logs / benchmark output ----
+logs/
+*.log
+benchmark_*.csv
+
+# ---- OS ----
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
