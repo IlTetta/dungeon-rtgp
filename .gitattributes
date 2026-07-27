@@ -1,0 +1,33 @@
+# Normalize line endings: repo stores LF, checkout as-is on each OS.
+* text=auto
+
+# Explicit text types (LF in the repo)
+*.cpp   text
+*.h     text
+*.hpp   text
+*.c     text
+*.glsl  text
+*.vert  text
+*.frag  text
+*.geom  text
+*.md    text
+*.txt   text
+*.cmake text
+CMakeLists.txt text
+
+# Binary assets: never touch EOLs / diff
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.tga   binary
+*.dds   binary
+*.hdr   binary
+*.fbx   binary
+*.obj   binary
+*.gltf  binary
+*.glb   binary
+*.mtl   binary
+*.ttf   binary
+*.otf   binary
+*.mp4   binary
+*.zip   binary
