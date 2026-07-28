@@ -1,8 +1,11 @@
 # ---- Build output ----
+# N.B. we DO NOT ignore *.lib / *.dll / *.a globally, because we commit the prebuilt
+# libraries (GLFW, Assimp, ...) inside libs/ and external/ (strategy A). The compiler
+# output of those types ends up inside build/ (or bin/, Debug/, ...) which are ignored
+# as whole folders below, so we don't lose anything by removing the extension rules.
 build/
 out/
 bin/
-lib/
 Debug/
 Release/
 x64/
@@ -12,9 +15,6 @@ x86/
 *.o
 *.obj
 *.exe
-*.dll
-*.lib
-*.a
 *.pdb
 *.ilk
 *.exp
@@ -58,8 +58,10 @@ ipch/
 .idea/
 cmake-build-*/
 
-# ---- Dependencies (if vendored binaries) ----
-# Keep source of libs if committed; ignore prebuilt archives
+# ---- Dependencies ----
+# We commit the libraries into the repo (strategy A): external/ (headers + glad/imgui
+# source) and libs/win/ (prebuilt .lib/.dll). We only ignore the compressed archives we
+# might download before extracting them.
 *.zip
 *.7z
 *.tar.gz

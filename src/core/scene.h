@@ -1,16 +1,10 @@
 #pragma once
 
 // SHARED FILE: da cambiare insieme all'inizio di ogni milestone
-//
-// IMPORTANT: in the .cpp that includes this file, you must include <glad/glad.h>
-// BEFORE this header. The reason is that mesh.h (below) uses OpenGL types like GLuint
-// and OpenGL functions, but it does not include glad by itself: it expects glad to be
-// already included. If you include scene.h before glad you will get a lot of
-// "GLuint was not declared" errors.
 
 #include <vector>
 #include <glm/glm.hpp>      // gives us glm::vec3 and glm::mat4
-#include <utils/mesh.h>     // the Mesh class from the lab framework (owns VAO/VBO/EBO)
+#include "engine/mesh.h"    // our Mesh class (owns VAO/VBO/EBO); it includes glad by itself
 #include "material.h"
 
 // Axis Aligned Bounding Box.
