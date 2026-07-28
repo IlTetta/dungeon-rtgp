@@ -14,4 +14,3 @@ to **measure the impact of CPU/GPU optimizations** (frustum culling, fog quality
 - `feat/andrea`: scene, geometry, tooling (BSP dungeon, culling, HUD, benchmark).
 - `feat/lorenzo`: rendering, lighting, effects (GGX, shadow mapping, volumetric fog).
 
-See [work_division.md](work_division.md) for the full split and the shared contracts.
