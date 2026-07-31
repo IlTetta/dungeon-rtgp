@@ -5,7 +5,7 @@
 // This is only to SEE that the geometry, the scale and the lights are correct. Later, Lorenzo's
 // Renderer (in src/render/) will replace all the drawing code here with the real GGX + shadows.
 //
-// Controls: WASD to move, mouse to look, ESC to quit.
+// Controls: WASD to move, Shift to sprint, mouse to look, ESC to quit.
 
 #ifdef _WIN32
     #define APIENTRY __stdcall
@@ -26,10 +26,14 @@
 #include "core/scene.h"
 #include "dungeon/dungeon_generator.h"
 #include "world/dungeon_geometry.h"
+#include "world/collision.h"
 
 // window size
 const unsigned int WIDTH = 1280;
 const unsigned int HEIGHT = 720;
+
+// radius of the player sphere used for wall collisions
+const float PLAYER_RADIUS = 0.4f;
 
 // --- globals used by the input callbacks (same simple approach as the lab code) ---
 Camera camera(glm::vec3(0.0f, 1.6f, 0.0f), true);   // start position is fixed later, after we build the level
@@ -139,6 +143,8 @@ int main() {
 
         glfwPollEvents();
         applyMovements();
+        // push the player out of any wall it tried to walk into
+        camera.Position = resolveWallCollisions(camera.Position, PLAYER_RADIUS, scene);
         glm::mat4 view = camera.getViewMatrix();
 
         glClearColor(0.02f, 0.02f, 0.03f, 1.0f);
