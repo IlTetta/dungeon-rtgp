@@ -87,6 +87,9 @@ public:
     void setVec3(const std::string& name, const glm::vec3& value) {
         glUniform3fv(glGetUniformLocation(this->program, name.c_str()), 1, glm::value_ptr(value));
     }
+    void setMat3(const std::string& name, const glm::mat3& value) {
+        glUniformMatrix3fv(glGetUniformLocation(this->program, name.c_str()), 1, GL_FALSE, glm::value_ptr(value));
+    }
     void setMat4(const std::string& name, const glm::mat4& value) {
         // the GL_FALSE means "do not transpose the matrix", glm already stores it the way OpenGL wants
         glUniformMatrix4fv(glGetUniformLocation(this->program, name.c_str()), 1, GL_FALSE, glm::value_ptr(value));

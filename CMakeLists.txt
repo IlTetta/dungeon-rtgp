@@ -62,3 +62,31 @@ target_link_libraries(dungeon PRIVATE
     opengl32
     gdi32
 )
+
+# The program loads the shaders with relative paths ("shaders/basic.vert", ...). To make sure
+# they are found no matter the working directory, after each build we COPY the shaders folder
+# next to the executable. Visual Studio runs the program from the executable's folder, so the
+# relative paths then resolve correctly.
+add_custom_command(TARGET dungeon POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/shaders"
+        "$<TARGET_FILE_DIR:dungeon>/shaders")
+
+# Also set the VS debugger working directory to the project root (used when VS generates a normal
+# solution). Harmless when it is not applied, because of the copy above.
+set_target_properties(dungeon PROPERTIES
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
+# --- test tool: BSP dungeon generator ---
+# A separate console executable that generates a dungeon and prints it as ASCII. It is pure
+# standard C++ (no OpenGL / no libraries), so we can run and debug the generation logic on its
+# own, without the 3D window. In Visual Studio pick "bsp_test.exe" as the startup item to run it.
+add_executable(bsp_test
+    src/dungeon/dungeon_test.cpp
+)
+# needs "src" (our headers) and "external" (glm, and glad which mesh.h includes). It does NOT
+# link OpenGL: the test only calls the pure layout code, never the GPU functions.
+target_include_directories(bsp_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/external
+)
