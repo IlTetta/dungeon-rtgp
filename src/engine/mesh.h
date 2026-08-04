@@ -88,9 +88,12 @@ public:
     ~Mesh() noexcept {
         freeGPU();
     }
-
+    // LV - Aggiunto const alla funzione perchè Render::render prende const scene& 
     // Draw the mesh: bind its VAO and ask OpenGL to draw the triangles from the indices.
-    void draw() {
+    // Marked "const": drawing does not change any C++-visible state of the Mesh (the VAO
+    // id itself is not modified), and the Renderer needs to call this on a "const Mesh&"
+    // because it receives the whole Scene as "const Scene&".
+    void draw() const {
         glBindVertexArray(VAO);
         glDrawElements(GL_TRIANGLES, this->indices.size(), GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);

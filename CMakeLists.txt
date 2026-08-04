@@ -20,10 +20,20 @@ add_executable(dungeon
     src/main.cpp
     external/glad/glad.c
 
+    # LV - Aggiunti renderer e framebuffer 
+
+    # M1: the renderer is split into a .h (interface, see src/render/renderer.h) and a
+    # .cpp (implementation) because it is bigger and more central than the header-only
+    # engine/ classes, so it gets its own translation unit like main.cpp does.
+    src/render/renderer.cpp
+
+    # Off-screen rendering scaffolding (used later by shadow mapping / fog); see
+    # src/render/framebuffer.h for what it is for.
+    src/render/framebuffer.cpp
+
     # --- add here LATER, when we create them ---
     # src/world/world.cpp
-    # src/render/renderer.cpp
-    #
+
     # --- add here LATER the Dear ImGui source files (needed for the HUD in M2) ---
     # external/imgui/imgui.cpp
     # external/imgui/imgui_draw.cpp
@@ -61,4 +71,17 @@ target_link_libraries(dungeon PRIVATE
     glfw3
     opengl32
     gdi32
+)
+
+#LV - Aggiunte shaders
+# main.cpp loads them with a plain relative path ("shaders/basic.vert"), which is
+# resolved against the program's WORKING DIRECTORY at run time (not against the source
+# tree). That working directory is normally the executable's own folder (e.g.
+# build/Debug/), so we copy shaders/ there after every build. This way "Ctrl+F5" in
+# Visual Studio, or running dungeon.exe by hand from build/Debug/, both just work; you
+# do not need to configure a custom working directory by hand.
+add_custom_command(TARGET dungeon POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/shaders
+        $<TARGET_FILE_DIR:dungeon>/shaders
 )
