@@ -30,6 +30,11 @@
 #include "world/collision.h"
 #include "world/frustum_culling.h"
 
+// Dear ImGui (performance HUD)
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+
 // window size
 const unsigned int WIDTH = 1280;
 const unsigned int HEIGHT = 720;
@@ -115,6 +120,15 @@ int main() {
     glViewport(0, 0, WIDTH, HEIGHT);
     glEnable(GL_DEPTH_TEST);   // so nearer surfaces correctly hide farther ones
 
+    // --- init Dear ImGui (for the performance HUD) ---
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+    // connect ImGui to GLFW (input) and to OpenGL. "true" lets ImGui chain to the keyboard/mouse
+    // callbacks we already installed above, so our WASD/C keys keep working.
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init("#version 410");
+
     // build the dungeon and its 3D geometry (needs the OpenGL context, so we do it now)
     DungeonParams params;   // default tile size / wall height
     DungeonGenerator generator(60, 30, 12345);
@@ -142,11 +156,8 @@ int main() {
     int numLights = (int)scene.lights.size();
     if (numLights > 32) numLights = 32;
 
-    // per-frame measurements (the HUD in the next step will read these)
+    // per-frame measurements, shown in the ImGui HUD
     FrameMetrics metrics;
-    // for updating the window title with the stats a couple of times per second
-    double lastTitleUpdate = glfwGetTime();
-    int framesSinceUpdate = 0;
 
     // render loop
     while (!glfwWindowShouldClose(window)) {
@@ -163,6 +174,11 @@ int main() {
 
         glClearColor(0.02f, 0.02f, 0.03f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        // start a new ImGui frame (must be done before we build any ImGui window)
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
 
         shader.use();
         // uniforms that are the same for every object this frame
@@ -202,25 +218,32 @@ int main() {
         metrics.drawCalls = drawn;
         metrics.trianglesDrawn = drawn * 12;   // 12 triangles per cube
         metrics.frameTimeMs = deltaTime * 1000.0f;
+        metrics.fps = ImGui::GetIO().Framerate;   // smoothed fps kept by ImGui
+
+        // --- HUD window ---
+        ImGui::Begin("Performance");
+        ImGui::Text("FPS: %.0f  (%.2f ms)", metrics.fps, metrics.frameTimeMs);
+        ImGui::Separator();
+        ImGui::Text("Objects drawn : %d / %d", metrics.drawCalls, metrics.objectsTotal);
+        ImGui::Text("Objects culled: %d", metrics.objectsCulled);
+        ImGui::Text("Triangles     : %d", metrics.trianglesDrawn);
+        ImGui::Text("Lights        : %d", numLights);
+        ImGui::Separator();
+        ImGui::Text("Frustum culling: %s", cullingEnabled ? "ON" : "OFF");
+        ImGui::TextDisabled("C toggle culling - WASD move - Shift sprint - ESC quit");
+        ImGui::End();
+
+        // draw the HUD on top of the scene, then present the frame
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
         glfwSwapBuffers(window);
-
-        // update the window title with the stats about twice per second
-        framesSinceUpdate++;
-        double now = glfwGetTime();
-        if (now - lastTitleUpdate >= 0.5) {
-            metrics.fps = (float)(framesSinceUpdate / (now - lastTitleUpdate));
-            std::string title = "Dungeon RTGP  |  FPS " + std::to_string((int)metrics.fps)
-                + "  |  drawn " + std::to_string(metrics.drawCalls) + "/" + std::to_string(metrics.objectsTotal)
-                + "  |  culled " + std::to_string(metrics.objectsCulled)
-                + "  |  culling " + (cullingEnabled ? "ON" : "OFF") + " (press C)";
-            glfwSetWindowTitle(window, title.c_str());
-            lastTitleUpdate = now;
-            framesSinceUpdate = 0;
-        }
     }
 
     // cleanup
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
     shader.clean();
     glfwTerminate();
     return 0;

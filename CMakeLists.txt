@@ -20,17 +20,15 @@ add_executable(dungeon
     src/main.cpp
     external/glad/glad.c
 
-    # --- add here LATER, when we create them ---
-    # src/world/world.cpp
-    # src/render/renderer.cpp
-    #
-    # --- add here LATER the Dear ImGui source files (needed for the HUD in M2) ---
-    # external/imgui/imgui.cpp
-    # external/imgui/imgui_draw.cpp
-    # external/imgui/imgui_tables.cpp
-    # external/imgui/imgui_widgets.cpp
-    # external/imgui/imgui_impl_glfw.cpp
-    # external/imgui/imgui_impl_opengl3.cpp
+    # Dear ImGui (used for the performance HUD). These source files are compiled together with
+    # our code. The first four are the ImGui core; the last two are the "backends" that connect
+    # ImGui to GLFW (input) and to OpenGL 3+ (rendering).
+    external/imgui/imgui.cpp
+    external/imgui/imgui_draw.cpp
+    external/imgui/imgui_tables.cpp
+    external/imgui/imgui_widgets.cpp
+    external/imgui/imgui_impl_glfw.cpp
+    external/imgui/imgui_impl_opengl3.cpp
 )
 
 # The prebuilt GLFW from the lab was compiled with the STATIC RELEASE C runtime (it pulls in
@@ -41,11 +39,13 @@ set_property(TARGET dungeon PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
 # --- where to look for header files ---
-#   src      -> lets us write  #include "core/scene.h" , #include "engine/mesh.h"
-#   external -> lets us write  #include <glad/glad.h> , <glfw/glfw3.h> , <glm/glm.hpp>
+#   src          -> lets us write  #include "core/scene.h" , #include "engine/mesh.h"
+#   external     -> lets us write  #include <glad/glad.h> , <glfw/glfw3.h> , <glm/glm.hpp>
+#   external/imgui -> lets us (and the ImGui sources) write  #include "imgui.h"
 target_include_directories(dungeon PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/external
+    ${CMAKE_SOURCE_DIR}/external/imgui
 )
 
 # --- where to look for the prebuilt .lib files ---
