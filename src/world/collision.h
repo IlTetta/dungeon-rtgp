@@ -1,20 +1,17 @@
 #pragma once
 
-// Simple ad-hoc collision handling (no physics engine, as agreed with the professor).
+// Simple ad-hoc collision handling.
 //
 // We treat the player as a SPHERE (its center is the camera position, at eye height) and we push
 // it out of any WALL box it is penetrating. This is enough to stop the player from walking
 // through walls, and it naturally "slides" along a wall when you move diagonally into it.
 //
-// We only test WALL objects: the floor slabs are ~1.6 units below the camera, well outside the
+// We only test WALL objects: the floor slabs are 1.6 units below the camera, well outside the
 // sphere, so they never block the movement (and we don't want them to).
-//
-// The intersection test used here (closest point on an AABB to a sphere center) is exactly the
-// kind of test seen in the Intersection Tests / Collision Detection lectures (07 / 08a).
 
 #include <glm/glm.hpp>
-#include <algorithm>   // std::min, std::max
-#include <cmath>       // std::sqrt
+#include <algorithm>
+#include <cmath>
 
 #include "core/scene.h"
 

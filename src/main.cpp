@@ -24,9 +24,11 @@
 #include "engine/shader.h"
 #include "engine/camera.h"
 #include "core/scene.h"
+#include "core/metrics.h"
 #include "dungeon/dungeon_generator.h"
 #include "world/dungeon_geometry.h"
 #include "world/collision.h"
+#include "world/frustum_culling.h"
 
 // window size
 const unsigned int WIDTH = 1280;
@@ -35,7 +37,10 @@ const unsigned int HEIGHT = 720;
 // radius of the player sphere used for wall collisions
 const float PLAYER_RADIUS = 0.4f;
 
-// --- globals used by the input callbacks (same simple approach as the lab code) ---
+// frustum culling on/off (toggled with the C key), to compare performance ON vs OFF
+bool cullingEnabled = true;
+
+// globals used by the input callbacks (same simple approach as the lab code)
 Camera camera(glm::vec3(0.0f, 1.6f, 0.0f), true);   // start position is fixed later, after we build the level
 bool keys[1024] = { false };
 float deltaTime = 0.0f;   // time between the current frame and the previous one
@@ -48,6 +53,9 @@ bool firstMouse = true;
 void key_callback(GLFWwindow* window, int key, int scancode, int action, int mode) {
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
+    // toggle frustum culling on/off
+    if (key == GLFW_KEY_C && action == GLFW_PRESS)
+        cullingEnabled = !cullingEnabled;
     if (key >= 0 && key < 1024) {
         if (action == GLFW_PRESS)   keys[key] = true;
         if (action == GLFW_RELEASE) keys[key] = false;
@@ -80,7 +88,7 @@ void applyMovements() {
 }
 
 int main() {
-    // --- window + OpenGL 4.1 core context ---
+    // window + OpenGL 4.1 core context
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
@@ -107,7 +115,7 @@ int main() {
     glViewport(0, 0, WIDTH, HEIGHT);
     glEnable(GL_DEPTH_TEST);   // so nearer surfaces correctly hide farther ones
 
-    // --- build the dungeon and its 3D geometry (needs the OpenGL context, so we do it now) ---
+    // build the dungeon and its 3D geometry (needs the OpenGL context, so we do it now)
     DungeonParams params;   // default tile size / wall height
     DungeonGenerator generator(60, 30, 12345);
     Dungeon dungeon = generator.generate();
@@ -122,7 +130,7 @@ int main() {
         camera.Position = glm::vec3(cx, 1.6f, cz);
     }
 
-    // --- shader and constant matrices ---
+    // shader and constant matrices
     Shader shader("shaders/basic.vert", "shaders/basic.frag");
     glm::mat4 projection = glm::perspective(glm::radians(60.0f), (float)WIDTH / (float)HEIGHT, 0.1f, 500.0f);
 
@@ -134,7 +142,13 @@ int main() {
     int numLights = (int)scene.lights.size();
     if (numLights > 32) numLights = 32;
 
-    // --- render loop ---
+    // per-frame measurements (the HUD in the next step will read these)
+    FrameMetrics metrics;
+    // for updating the window title with the stats a couple of times per second
+    double lastTitleUpdate = glfwGetTime();
+    int framesSinceUpdate = 0;
+
+    // render loop
     while (!glfwWindowShouldClose(window)) {
         // time management
         float currentFrame = (float)glfwGetTime();
@@ -163,8 +177,15 @@ int main() {
             shader.setFloat("lightIntensity[" + idx + "]", scene.lights[i].intensity);
         }
 
-        // draw every object in the scene
+        // build the frustum from this frame's view-projection matrix (for culling)
+        Frustum frustum = extractFrustum(projection * view);
+
+        // draw the objects, skipping the ones outside the frustum (when culling is on)
+        int drawn = 0;
         for (const RenderObject& obj : scene.objects) {
+            if (cullingEnabled && !isAABBVisible(frustum, obj.worldBounds))
+                continue;   // this object is not visible: skip it
+
             shader.setMat4("modelMatrix", obj.modelMatrix);
             // normal matrix = transpose(inverse(mat3(model))), so normals stay correct under scale
             glm::mat3 normalMatrix = glm::inverseTranspose(glm::mat3(obj.modelMatrix));
@@ -172,12 +193,34 @@ int main() {
             shader.setVec3("objectColor", obj.material == MAT_FLOOR ? floorColor : wallColor);
 
             scene.meshes[obj.meshIndex].draw();
+            drawn++;
         }
 
+        // fill the metrics for this frame
+        metrics.objectsTotal = (int)scene.objects.size();
+        metrics.objectsCulled = metrics.objectsTotal - drawn;
+        metrics.drawCalls = drawn;
+        metrics.trianglesDrawn = drawn * 12;   // 12 triangles per cube
+        metrics.frameTimeMs = deltaTime * 1000.0f;
+
         glfwSwapBuffers(window);
+
+        // update the window title with the stats about twice per second
+        framesSinceUpdate++;
+        double now = glfwGetTime();
+        if (now - lastTitleUpdate >= 0.5) {
+            metrics.fps = (float)(framesSinceUpdate / (now - lastTitleUpdate));
+            std::string title = "Dungeon RTGP  |  FPS " + std::to_string((int)metrics.fps)
+                + "  |  drawn " + std::to_string(metrics.drawCalls) + "/" + std::to_string(metrics.objectsTotal)
+                + "  |  culled " + std::to_string(metrics.objectsCulled)
+                + "  |  culling " + (cullingEnabled ? "ON" : "OFF") + " (press C)";
+            glfwSetWindowTitle(window, title.c_str());
+            lastTitleUpdate = now;
+            framesSinceUpdate = 0;
+        }
     }
 
-    // --- cleanup ---
+    // cleanup
     shader.clean();
     glfwTerminate();
     return 0;
