@@ -1,11 +1,12 @@
 // main.cpp
 //
-// TEMPORARY integration / smoke test: it generates the dungeon, turns it into 3D geometry, and
-// lets you walk through it in first person with a very simple diffuse lighting from the torches.
-// This is only to SEE that the geometry, the scale and the lights are correct. Later, Lorenzo's
-// Renderer (in src/render/) will replace all the drawing code here with the real GGX + shadows.
+// Integrated application (M1 + M2):
+//   - Andrea's side: procedural BSP dungeon -> 3D geometry (the Scene), FPS camera with
+//     ad-hoc wall collisions, and the ImGui performance HUD.
+//   - Lorenzo's side: the Renderer (GGX forward shading) that actually draws the Scene.
+//   - The frustum culling now lives inside the Renderer (it iterates the objects anyway).
 //
-// Controls: WASD to move, Shift to sprint, mouse to look, ESC to quit.
+// Controls: WASD move, Shift sprint, mouse look, C toggle culling, ESC quit.
 
 #ifdef _WIN32
     #define APIENTRY __stdcall
@@ -16,19 +17,17 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/matrix_inverse.hpp>   // glm::inverseTranspose
 
 #include <string>
 #include <iostream>
 
-#include "engine/shader.h"
 #include "engine/camera.h"
 #include "core/scene.h"
 #include "core/metrics.h"
 #include "dungeon/dungeon_generator.h"
 #include "world/dungeon_geometry.h"
 #include "world/collision.h"
-#include "world/frustum_culling.h"
+#include "render/renderer.h"
 
 // Dear ImGui (performance HUD)
 #include "imgui.h"
@@ -46,7 +45,7 @@ const float PLAYER_RADIUS = 0.4f;
 bool cullingEnabled = true;
 
 // globals used by the input callbacks (same simple approach as the lab code)
-Camera camera(glm::vec3(0.0f, 1.6f, 0.0f), true);   // start position is fixed later, after we build the level
+Camera camera(glm::vec3(0.0f, 1.6f, 0.0f), true);   // start position is set later, after we build the level
 bool keys[1024] = { false };
 float deltaTime = 0.0f;   // time between the current frame and the previous one
 float lastFrame = 0.0f;
@@ -93,7 +92,7 @@ void applyMovements() {
 }
 
 int main() {
-    // window + OpenGL 4.1 core context
+    // --- window + OpenGL 4.1 core context ---
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
@@ -117,19 +116,7 @@ int main() {
         return -1;
     }
 
-    glViewport(0, 0, WIDTH, HEIGHT);
-    glEnable(GL_DEPTH_TEST);   // so nearer surfaces correctly hide farther ones
-
-    // --- init Dear ImGui (for the performance HUD) ---
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGui::StyleColorsDark();
-    // connect ImGui to GLFW (input) and to OpenGL. "true" lets ImGui chain to the keyboard/mouse
-    // callbacks we already installed above, so our WASD/C keys keep working.
-    ImGui_ImplGlfw_InitForOpenGL(window, true);
-    ImGui_ImplOpenGL3_Init("#version 410");
-
-    // build the dungeon and its 3D geometry (needs the OpenGL context, so we do it now)
+    // --- build the dungeon and its 3D geometry (needs the OpenGL context, so we do it now) ---
     DungeonParams params;   // default tile size / wall height
     DungeonGenerator generator(60, 30, 12345);
     Dungeon dungeon = generator.generate();
@@ -144,22 +131,21 @@ int main() {
         camera.Position = glm::vec3(cx, 1.6f, cz);
     }
 
-    // shader and constant matrices
-    Shader shader("shaders/basic.vert", "shaders/basic.frag");
-    glm::mat4 projection = glm::perspective(glm::radians(60.0f), (float)WIDTH / (float)HEIGHT, 0.1f, 500.0f);
+    // --- renderer (GGX forward shading) ---
+    Renderer renderer("shaders/ggx.vert", "shaders/ggx.frag");
+    renderer.setViewport(WIDTH, HEIGHT);
 
-    // base colors for the two materials
-    glm::vec3 floorColor(0.35f, 0.35f, 0.40f);
-    glm::vec3 wallColor(0.55f, 0.48f, 0.40f);
+    // --- init Dear ImGui (for the performance HUD) ---
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+    // "true" lets ImGui chain to the keyboard/mouse callbacks we already installed above.
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init("#version 410");
 
-    // how many lights we actually send (the shader array has a fixed maximum)
-    int numLights = (int)scene.lights.size();
-    if (numLights > 32) numLights = 32;
+    FrameMetrics metrics;   // most fields are filled by the renderer; fps/frameTime here in main
 
-    // per-frame measurements, shown in the ImGui HUD
-    FrameMetrics metrics;
-
-    // render loop
+    // --- render loop ---
     while (!glfwWindowShouldClose(window)) {
         // time management
         float currentFrame = (float)glfwGetTime();
@@ -170,55 +156,20 @@ int main() {
         applyMovements();
         // push the player out of any wall it tried to walk into
         camera.Position = resolveWallCollisions(camera.Position, PLAYER_RADIUS, scene);
-        glm::mat4 view = camera.getViewMatrix();
 
-        glClearColor(0.02f, 0.02f, 0.03f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        // start a new ImGui frame (must be done before we build any ImGui window)
+        // start a new ImGui frame (before drawing anything)
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        shader.use();
-        // uniforms that are the same for every object this frame
-        shader.setMat4("projectionMatrix", projection);
-        shader.setMat4("viewMatrix", view);
-        shader.setInt("numLights", numLights);
-        for (int i = 0; i < numLights; i++) {
-            std::string idx = std::to_string(i);
-            shader.setVec3("lightPos[" + idx + "]", scene.lights[i].position);
-            shader.setVec3("lightColor[" + idx + "]", scene.lights[i].color);
-            shader.setFloat("lightRadius[" + idx + "]", scene.lights[i].radius);
-            shader.setFloat("lightIntensity[" + idx + "]", scene.lights[i].intensity);
-        }
+        // draw the whole scene (this clears the screen, does the culling, and fills the
+        // object/draw/light counters in "metrics")
+        renderer.cullingEnabled = cullingEnabled;
+        renderer.render(scene, camera, metrics);
 
-        // build the frustum from this frame's view-projection matrix (for culling)
-        Frustum frustum = extractFrustum(projection * view);
-
-        // draw the objects, skipping the ones outside the frustum (when culling is on)
-        int drawn = 0;
-        for (const RenderObject& obj : scene.objects) {
-            if (cullingEnabled && !isAABBVisible(frustum, obj.worldBounds))
-                continue;   // this object is not visible: skip it
-
-            shader.setMat4("modelMatrix", obj.modelMatrix);
-            // normal matrix = transpose(inverse(mat3(model))), so normals stay correct under scale
-            glm::mat3 normalMatrix = glm::inverseTranspose(glm::mat3(obj.modelMatrix));
-            shader.setMat3("normalMatrix", normalMatrix);
-            shader.setVec3("objectColor", obj.material == MAT_FLOOR ? floorColor : wallColor);
-
-            scene.meshes[obj.meshIndex].draw();
-            drawn++;
-        }
-
-        // fill the metrics for this frame
-        metrics.objectsTotal = (int)scene.objects.size();
-        metrics.objectsCulled = metrics.objectsTotal - drawn;
-        metrics.drawCalls = drawn;
-        metrics.trianglesDrawn = drawn * 12;   // 12 triangles per cube
+        // the two metrics that main is responsible for
+        metrics.fps = ImGui::GetIO().Framerate;
         metrics.frameTimeMs = deltaTime * 1000.0f;
-        metrics.fps = ImGui::GetIO().Framerate;   // smoothed fps kept by ImGui
 
         // --- HUD window ---
         ImGui::Begin("Performance");
@@ -227,7 +178,7 @@ int main() {
         ImGui::Text("Objects drawn : %d / %d", metrics.drawCalls, metrics.objectsTotal);
         ImGui::Text("Objects culled: %d", metrics.objectsCulled);
         ImGui::Text("Triangles     : %d", metrics.trianglesDrawn);
-        ImGui::Text("Lights        : %d", numLights);
+        ImGui::Text("Lights        : %d", metrics.activeLights);
         ImGui::Separator();
         ImGui::Text("Frustum culling: %s", cullingEnabled ? "ON" : "OFF");
         ImGui::TextDisabled("C toggle culling - WASD move - Shift sprint - ESC quit");
@@ -240,11 +191,11 @@ int main() {
         glfwSwapBuffers(window);
     }
 
-    // cleanup
+    // --- cleanup ---
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
-    shader.clean();
+    renderer.clean();
     glfwTerminate();
     return 0;
 }

@@ -12,17 +12,19 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # --- the files to compile ---
-# Our core/ and engine/ classes are header-only, so they do NOT go here: they are pulled in
-# by #include from main.cpp. What must be compiled is:
-#   - main.cpp                (our program)
-#   - external/glad/glad.c    (the GLAD implementation: it defines the OpenGL functions)
+# Our core/, engine/, world/ and dungeon/ classes are header-only, so they do NOT go here:
+# they are pulled in by #include. What must be compiled:
 add_executable(dungeon
     src/main.cpp
     external/glad/glad.c
 
-    # Dear ImGui (used for the performance HUD). These source files are compiled together with
-    # our code. The first four are the ImGui core; the last two are the "backends" that connect
-    # ImGui to GLFW (input) and to OpenGL 3+ (rendering).
+    # the renderer and the off-screen framebuffer are split into .h + .cpp (they are bigger
+    # and more central than the header-only classes), so they get their own translation units
+    src/render/renderer.cpp
+    src/render/framebuffer.cpp
+
+    # Dear ImGui (performance HUD): 4 core files + 2 backends (GLFW input, OpenGL3 rendering).
+    # ImGui is not a separate library: it is compiled together with our code.
     external/imgui/imgui.cpp
     external/imgui/imgui_draw.cpp
     external/imgui/imgui_tables.cpp
@@ -39,9 +41,9 @@ set_property(TARGET dungeon PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
 # --- where to look for header files ---
-#   src          -> lets us write  #include "core/scene.h" , #include "engine/mesh.h"
-#   external     -> lets us write  #include <glad/glad.h> , <glfw/glfw3.h> , <glm/glm.hpp>
-#   external/imgui -> lets us (and the ImGui sources) write  #include "imgui.h"
+#   src            -> #include "core/scene.h" , "engine/mesh.h" , "render/renderer.h" , ...
+#   external       -> #include <glad/glad.h> , <glfw/glfw3.h> , <glm/glm.hpp>
+#   external/imgui -> #include "imgui.h" (used by us and by the ImGui sources)
 target_include_directories(dungeon PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/external
@@ -63,7 +65,7 @@ target_link_libraries(dungeon PRIVATE
     gdi32
 )
 
-# The program loads the shaders with relative paths ("shaders/basic.vert", ...). To make sure
+# The program loads the shaders with relative paths ("shaders/ggx.vert", ...). To make sure
 # they are found no matter the working directory, after each build we COPY the shaders folder
 # next to the executable. Visual Studio runs the program from the executable's folder, so the
 # relative paths then resolve correctly.

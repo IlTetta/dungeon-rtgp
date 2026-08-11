@@ -15,11 +15,14 @@ struct FrameMetrics {
     float fps           = 0.0f;   // filled in main.cpp
     float frameTimeMs   = 0.0f;   // filled in main.cpp
 
-    int objectsTotal    = 0;      // filled by World  (how many objects the scene has)
-    int objectsCulled   = 0;      // filled by World  (how many were skipped by culling, M2)
-    int activeLights    = 0;      // filled by World  (how many lights are used)
+    // These four are filled by the Renderer: since the frustum culling now happens inside
+    // render() (it iterates the objects anyway), the Renderer is the natural single writer
+    // for all the object/draw counters.
+    int objectsTotal    = 0;      // how many objects the scene has
+    int objectsCulled   = 0;      // how many were skipped by frustum culling (M2)
+    int activeLights    = 0;      // how many lights are actually used
 
-    int drawCalls       = 0;      // filled by Renderer (how many draw calls this frame)
+    int drawCalls       = 0;      // how many draw calls this frame (= objects actually drawn)
     int trianglesDrawn  = 0;      // filled by Renderer (how many triangles were sent)
     int fogSteps        = 0;      // filled by Renderer (ray-march steps of the fog, M3)
 };

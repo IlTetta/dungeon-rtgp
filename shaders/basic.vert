@@ -1,27 +1,24 @@
+// basic.vert
+// Vertex shader for the basic forward rendering.
+// It only moves each vertex from object (model) space to clip space. (mesh data -> vertex
+// shader -> fragment shader -> pixels on screen).
+
 #version 410 core
 
-// Vertex attributes: they match the layout set in mesh.h (setupMesh).
+// Attribute locations must match the ones we set up on the CPU side in Mesh::setupMesh()
+// (see src/engine/mesh.h): 0 = Position, 1 = Normal, 2 = TexCoords.
+// We only need aPos for now; the others are simply not read.
 layout (location = 0) in vec3 aPos;
-layout (location = 1) in vec3 aNormal;
-// locations 2,3,4 (uv, tangent, bitangent) exist but are not used by this basic shader.
 
-uniform mat4 modelMatrix;
-uniform mat4 viewMatrix;
-uniform mat4 projectionMatrix;
-uniform mat3 normalMatrix;   // = transpose(inverse(mat3(model))), to transform normals correctly
-
-// we send position and normal (in WORLD space) to the fragment shader, where we do the lighting
-out vec3 fragWorldPos;
-out vec3 fragNormal;
+// One matrix per object (position/rotation/scale) and two shared by the whole frame
+// (they depend on the camera, not on the single object).
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
 
 void main() {
-    // position of this vertex in world space
-    vec4 worldPos = modelMatrix * vec4(aPos, 1.0);
-    fragWorldPos = worldPos.xyz;
-
-    // normal in world space (normalMatrix handles the non-uniform scale of our boxes)
-    fragNormal = normalize(normalMatrix * aNormal);
-
-    // final clip-space position: projection * view * world
-    gl_Position = projectionMatrix * viewMatrix * worldPos;
+    // model -> world -> view -> clip space, all in one line: matrices are applied
+    // right to left, so aPos is first placed in the world by "model", then seen from
+    // the camera by "view", then projected by "projection".
+    gl_Position = projection * view * model * vec4(aPos, 1.0);
 }
