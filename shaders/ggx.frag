@@ -13,10 +13,11 @@ in vec2 TexCoords;
 
 out vec4 FragColor;
 
-// material (placeholders until we have textures) ---
-uniform vec3 baseColor;    // diffuse albedo
-uniform float roughness;   // "a" in the formulas above, in [0,1]: 0 = mirror, 1 = very rough
-uniform vec3 F0;           // Fresnel reflectance at normal incidence (0 degrees)
+// material
+uniform sampler2D albedoMap;   // base color (diffuse albedo), read from a texture
+uniform float uvScale;         // texture tiling: how many times it repeats across the UVs
+uniform float roughness;       // "a" in the formulas above, in [0,1]: 0 = mirror, 1 = very rough
+uniform vec3 F0;               // Fresnel reflectance at normal incidence (0 degrees)
 
 uniform vec3 viewPos;   // world-space camera position, needed to build V
 
@@ -66,6 +67,9 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 }
 
 void main() {
+    // read the base color from the texture (tiled by uvScale)
+    vec3 baseColor = texture(albedoMap, TexCoords * uvScale).rgb;
+
     vec3 N = normalize(Normal);
     vec3 V = normalize(viewPos - FragPos);
     float NdotV = max(dot(N, V), 0.0001);   // avoid a divide by 0 below

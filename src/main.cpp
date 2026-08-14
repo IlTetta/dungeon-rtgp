@@ -26,6 +26,7 @@
 #include "core/metrics.h"
 #include "dungeon/dungeon_generator.h"
 #include "world/dungeon_geometry.h"
+#include "world/props.h"
 #include "world/collision.h"
 #include "render/renderer.h"
 
@@ -122,6 +123,7 @@ int main() {
     Dungeon dungeon = generator.generate();
     DungeonLayout layout = buildDungeonLayout(dungeon, params);
     Scene scene = buildScene(layout);
+    addProps(scene, dungeon, params);   // torches, statues, columns (loaded from assets/models)
 
     // place the camera at eye height in the center of the first room
     if (!dungeon.rooms.empty()) {

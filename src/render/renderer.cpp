@@ -8,10 +8,14 @@
 Renderer::Renderer(const char* vertexPath, const char* fragmentPath)
     : shader(vertexPath, fragmentPath), fovDegrees(60.0f)
 {
-
     glEnable(GL_DEPTH_TEST);
-
     projection = glm::mat4(1.0f);
+
+    // load one albedo texture per material (placeholders for now: a stone-ish floor and a
+    // UV grid for walls/props, easy to swap for real dungeon textures later)
+    texFloor = loadTexture("assets/textures/SoilCracked.png");
+    texWall  = loadTexture("assets/textures/UV_Grid_Sm.png");
+    texProp  = loadTexture("assets/textures/UV_Grid_Sm.png");
 }
 
 void Renderer::setViewport(int width, int height) {
@@ -28,12 +32,22 @@ void Renderer::setViewport(int width, int height) {
     projection = glm::perspective(glm::radians(fovDegrees), aspect, 0.1f, 500.0f);
 }
 
-glm::vec3 Renderer::albedoForMaterial(MaterialId material) const {
+GLuint Renderer::albedoTexture(MaterialId material) const {
     switch (material) {
-        case MAT_FLOOR: return glm::vec3(0.45f, 0.40f, 0.33f);   // dusty brown stone
-        case MAT_WALL:  return glm::vec3(0.55f, 0.55f, 0.58f);   // cold grey stone
-        case MAT_PROP:  return glm::vec3(0.60f, 0.42f, 0.20f);   // warm wood/metal tint
-        default:        return glm::vec3(1.0f, 0.0f, 1.0f);      // magenta = "forgot a case"
+        case MAT_FLOOR: return texFloor;
+        case MAT_WALL:  return texWall;
+        case MAT_PROP:  return texProp;
+        default:        return texWall;
+    }
+}
+
+float Renderer::uvScaleForMaterial(MaterialId material) const {
+    // walls and floors are big flat surfaces: repeat the texture a couple of times so it does
+    // not look stretched. Props keep their model's own uv layout (no extra tiling).
+    switch (material) {
+        case MAT_FLOOR: return 2.0f;
+        case MAT_WALL:  return 2.0f;
+        default:        return 1.0f;
     }
 }
 
@@ -112,7 +126,11 @@ void Renderer::render(const Scene& scene, Camera& camera, FrameMetrics& metrics)
             continue;   // outside the view: skip it
 
         shader.setMat4("model", obj.modelMatrix);
-        shader.setVec3("baseColor", albedoForMaterial(obj.material));
+        // bind the albedo texture for this material to texture unit 0 and tell the sampler
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, albedoTexture(obj.material));
+        shader.setInt("albedoMap", 0);
+        shader.setFloat("uvScale", uvScaleForMaterial(obj.material));
         shader.setFloat("roughness", roughnessForMaterial(obj.material));
         shader.setVec3("F0", f0ForMaterial(obj.material));
 

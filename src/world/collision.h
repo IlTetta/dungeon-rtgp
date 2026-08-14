@@ -6,8 +6,10 @@
 // it out of any WALL box it is penetrating. This is enough to stop the player from walking
 // through walls, and it naturally "slides" along a wall when you move diagonally into it.
 //
-// We only test WALL objects: the floor slabs are 1.6 units below the camera, well outside the
-// sphere, so they never block the movement (and we don't want them to).
+// We block against WALL and PROP objects (walls, columns, statues), but NOT floors: the floor
+// slabs are ~1.6 units below the camera, well outside the sphere, so they never block the
+// movement (and we don't want them to). Torches are MAT_PROP too, but they float near the
+// ceiling, above the sphere, so they naturally never collide either.
 
 #include <glm/glm.hpp>
 #include <algorithm>
@@ -22,7 +24,7 @@ inline glm::vec3 resolveWallCollisions(glm::vec3 center, float radius, const Sce
     // might end up slightly inside another (for example in a corner), so a second pass fixes it.
     for (int pass = 0; pass < 2; pass++) {
         for (const RenderObject& obj : scene.objects) {
-            if (obj.material != MAT_WALL) continue;   // only walls block us
+            if (obj.material == MAT_FLOOR) continue;   // floors don't block; walls and props do
             const AABB& box = obj.worldBounds;
 
             // closest point on the box to the sphere center (clamp the center inside the box on

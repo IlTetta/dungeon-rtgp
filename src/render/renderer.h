@@ -33,6 +33,7 @@
 
 #include "engine/shader.h"
 #include "engine/camera.h"
+#include "engine/texture.h"          // loadTexture()
 #include "core/scene.h"
 #include "core/metrics.h"
 #include "world/frustum_culling.h"   // Andrea's culling, now used inside the render loop
@@ -79,12 +80,16 @@ private:
     // instead of hardcoding the same number twice)
     float fovDegrees;
 
-    // --- per-material look, until we have real textures ---
-    // These three all key off MaterialId (src/core/material.h) and are the GGX
-    // equivalent of the old colorForMaterial(): FLOOR/WALL/PROP each get a plausible
-    // flat albedo, roughness and Fresnel-at-0-degrees (F0) so they already look
-    // different from one another on screen.
-    glm::vec3 albedoForMaterial(MaterialId material) const;
-    float roughnessForMaterial(MaterialId material) const;
+    // --- per-material look ---
+    // The base color (albedo) now comes from a TEXTURE, one per MaterialId (loaded in the
+    // constructor). Roughness and Fresnel-at-0-degrees (F0) are still flat parameters per
+    // material for now (roughness/metallic maps would slot in exactly like the albedo map).
+    GLuint texFloor = 0;
+    GLuint texWall  = 0;
+    GLuint texProp  = 0;
+
+    GLuint albedoTexture(MaterialId material) const;   // which texture id for this material
+    float  uvScaleForMaterial(MaterialId material) const;   // texture tiling per material
+    float  roughnessForMaterial(MaterialId material) const;
     glm::vec3 f0ForMaterial(MaterialId material) const;
 };
