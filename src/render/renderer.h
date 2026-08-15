@@ -33,7 +33,6 @@
 
 #include "engine/shader.h"
 #include "engine/camera.h"
-#include "engine/texture.h"          // loadTexture()
 #include "core/scene.h"
 #include "core/metrics.h"
 #include "world/frustum_culling.h"   // Andrea's culling, now used inside the render loop
@@ -49,7 +48,7 @@ public:
     // past this (more torches than we can shade at once), render() below simply ignores
     // the extra ones for now; proper light culling (picking only the closest lights per
     // object) is a job for a later milestone, not for basic forward rendering.
-    static const int MAX_LIGHTS = 16;
+    static const int MAX_LIGHTS = 32;
 
     // Loads and compiles the given vertex/fragment shader pair (paths are relative to
     // the working directory the program is run from; see the comment next to the
@@ -80,16 +79,7 @@ private:
     // instead of hardcoding the same number twice)
     float fovDegrees;
 
-    // --- per-material look ---
-    // The base color (albedo) now comes from a TEXTURE, one per MaterialId (loaded in the
-    // constructor). Roughness and Fresnel-at-0-degrees (F0) are still flat parameters per
-    // material for now (roughness/metallic maps would slot in exactly like the albedo map).
-    GLuint texFloor = 0;
-    GLuint texWall  = 0;
-    GLuint texProp  = 0;
-
-    GLuint albedoTexture(MaterialId material) const;   // which texture id for this material
-    float  uvScaleForMaterial(MaterialId material) const;   // texture tiling per material
-    float  roughnessForMaterial(MaterialId material) const;
-    glm::vec3 f0ForMaterial(MaterialId material) const;
+    // NB: the renderer no longer owns any texture. Each object carries a materialIndex into
+    // Scene::materials, and we just bind that material's albedo texture. Loading the textures
+    // is done on the scene-building side (src/world/), so the renderer only READS the scene.
 };

@@ -18,12 +18,13 @@
 #include <glm/gtc/matrix_transform.hpp>   // glm::translate, glm::scale
 
 #include "core/scene.h"                    // Scene, RenderObject, AABB, Light, MaterialId
+#include "engine/texture.h"                // loadTexture()
 #include "dungeon/dungeon_generator.h"     // Dungeon, Tile, Rect
 
 // Tunable sizes for the 3D dungeon (in world units).
 struct DungeonParams {
     float tileSize = 2.0f;         // size of one grid cell in world units
-    float wallHeight = 3.0f;       // how tall the walls are
+    float wallHeight = 4.5f;       // how tall the walls are (taller = roomier, fits statue-on-altar)
     float floorThickness = 0.2f;   // how thick the floor slabs are
 };
 
@@ -91,6 +92,11 @@ inline DungeonLayout buildDungeonLayout(const Dungeon& d, const DungeonParams& p
                 glm::vec3 size(t, p.floorThickness, t);
                 glm::vec3 center(cx, -p.floorThickness * 0.5f, cz);
                 layout.boxes.push_back(makeBox(center, size, MAT_FLOOR));
+
+                // a matching ceiling slab on TOP of the walls (its bottom at y = wallHeight),
+                // so the dungeon is closed overhead
+                glm::vec3 ceilCenter(cx, p.wallHeight + p.floorThickness * 0.5f, cz);
+                layout.boxes.push_back(makeBox(ceilCenter, size, MAT_CEILING));
             }
             else {
                 // a wall, but only if it borders some walkable space
@@ -109,10 +115,10 @@ inline DungeonLayout buildDungeonLayout(const Dungeon& d, const DungeonParams& p
         float cz = (room.y + room.h * 0.5f) * t;
 
         Light light;
-        light.position = glm::vec3(cx, p.wallHeight * 0.75f, cz);
+        light.position = glm::vec3(cx, 1.2f, cz);    // low, near the brazier fire we place here
         light.color = glm::vec3(1.0f, 0.8f, 0.5f);   // warm, orange-ish
-        light.intensity = 1.5f;
-        light.radius = 8.0f * t;                     // reaches a few tiles around the room
+        light.intensity = 3.5f;                      // brighter so props are clearly visible
+        light.radius = 10.0f * t;                    // reaches farther, into the corridors a bit
         layout.lights.push_back(light);
     }
 
@@ -169,6 +175,15 @@ inline Scene buildScene(const DungeonLayout& layout) {
     // mesh index 0 = the unit cube, reused (scaled/translated) by every object
     scene.meshes.push_back(makeCubeMesh());
 
+    // the three surface materials, in a fixed order: 0 = floor, 1 = wall, 2 = ceiling.
+    // (props.h will append its own materials after these, starting at index 3.)
+    Material floorMat;   floorMat.albedo   = loadTexture("assets/textures/floor_albedo.png");   floorMat.uvScale = 2.0f; floorMat.roughness = 0.9f;
+    Material wallMat;    wallMat.albedo    = loadTexture("assets/textures/wall_albedo.png");    wallMat.uvScale  = 2.0f; wallMat.roughness  = 0.85f;
+    Material ceilingMat; ceilingMat.albedo = loadTexture("assets/textures/ceiling_albedo.png"); ceilingMat.uvScale = 2.0f; ceilingMat.roughness = 0.9f;
+    scene.materials.push_back(floorMat);     // index 0
+    scene.materials.push_back(wallMat);      // index 1
+    scene.materials.push_back(ceilingMat);   // index 2
+
     scene.objects.reserve(layout.boxes.size());
     for (const BoxPlacement& box : layout.boxes) {
         RenderObject obj;
@@ -181,6 +196,8 @@ inline Scene buildScene(const DungeonLayout& layout) {
         obj.modelMatrix = m;
         obj.worldBounds = box.bounds;
         obj.material = box.material;
+        // pick the surface material index from the kind
+        obj.materialIndex = (box.material == MAT_FLOOR) ? 0 : (box.material == MAT_WALL) ? 1 : 2;
         scene.objects.push_back(obj);
     }
 

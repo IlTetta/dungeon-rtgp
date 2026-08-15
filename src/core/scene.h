@@ -33,16 +33,32 @@ struct RenderObject {
     // and so collisions can use it too, without recomputing it every frame.
     AABB worldBounds;
 
-    // Tells the renderer how to shade this object (floor / wall / prop).
+    // The "kind" of surface (floor / wall / ceiling / prop). Used by gameplay logic, e.g.
+    // collisions (walls and props block the player, floors and ceilings do not).
     MaterialId material;
+
+    // Which visual material to draw this object with: an index into Scene::materials.
+    // This is separate from "material" above: many different objects (a floor, a barrel, a
+    // statue...) can each have their own texture, while the collision "kind" stays coarse.
+    int materialIndex = 0;
 };
 
-// A point light. In our project these are the torches on the dungeon walls.
+// A point light. In our project these are the torches / braziers in the dungeon.
 struct Light {
     glm::vec3 position;
     glm::vec3 color;
     float intensity;
     float radius;    // distance after which the light contribution is ~0 (attenuation)
+};
+
+// A visual material: HOW a surface looks. For now: an albedo (base color) texture, a texture
+// tiling factor, and the GGX roughness / F0 parameters. Normal and roughness MAPS will be
+// added here later (Step 2), and every object that uses this material gets them for free.
+struct Material {
+    GLuint albedo = 0;                 // base color texture id (from loadTexture)
+    float uvScale = 1.0f;              // how many times the texture repeats across the UVs
+    float roughness = 0.8f;            // GGX roughness (0 = mirror-smooth, 1 = very rough)
+    glm::vec3 F0 = glm::vec3(0.04f);   // Fresnel reflectance at 0 degrees (0.04 = dielectric)
 };
 
 // The shared scene description.
@@ -53,6 +69,7 @@ struct Light {
 // (for example "const Scene& scene"), never by value.
 struct Scene {
     std::vector<Mesh> meshes;            // the real geometry uploaded to the GPU
+    std::vector<Material> materials;     // the materials (textures) objects can be drawn with
     std::vector<RenderObject> objects;   // the list of instances to draw
-    std::vector<Light> lights;           // the torches
+    std::vector<Light> lights;           // the torches / braziers
 };

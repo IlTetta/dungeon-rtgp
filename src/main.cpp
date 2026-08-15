@@ -27,6 +27,7 @@
 #include "dungeon/dungeon_generator.h"
 #include "world/dungeon_geometry.h"
 #include "world/props.h"
+#include "world/chain_physics.h"
 #include "world/collision.h"
 #include "render/renderer.h"
 
@@ -45,6 +46,10 @@ const float PLAYER_RADIUS = 0.4f;
 // frustum culling on/off (toggled with the C key), to compare performance ON vs OFF
 bool cullingEnabled = true;
 
+// UI mode (toggled with TAB): the mouse cursor is released so we can interact with the ImGui HUD
+// (drag it, collapse it), and the camera stops turning. TAB again goes back to first-person.
+bool uiMode = false;
+
 // globals used by the input callbacks (same simple approach as the lab code)
 Camera camera(glm::vec3(0.0f, 1.6f, 0.0f), true);   // start position is set later, after we build the level
 bool keys[1024] = { false };
@@ -61,6 +66,12 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
     // toggle frustum culling on/off
     if (key == GLFW_KEY_C && action == GLFW_PRESS)
         cullingEnabled = !cullingEnabled;
+    // TAB: toggle the mouse cursor free (to use the HUD) / captured (first-person look)
+    if (key == GLFW_KEY_TAB && action == GLFW_PRESS) {
+        uiMode = !uiMode;
+        glfwSetInputMode(window, GLFW_CURSOR, uiMode ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+        firstMouse = true;   // avoid a camera jump when going back to first-person
+    }
     if (key >= 0 && key < 1024) {
         if (action == GLFW_PRESS)   keys[key] = true;
         if (action == GLFW_RELEASE) keys[key] = false;
@@ -69,6 +80,7 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
 
 // called by GLFW when the mouse moves
 void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
+    if (uiMode) return;          // in UI mode the mouse controls the HUD, not the camera
     if (firstMouse) {            // avoid a big jump on the very first mouse event
         lastX = (float)xpos;
         lastY = (float)ypos;
@@ -123,14 +135,16 @@ int main() {
     Dungeon dungeon = generator.generate();
     DungeonLayout layout = buildDungeonLayout(dungeon, params);
     Scene scene = buildScene(layout);
-    addProps(scene, dungeon, params);   // torches, statues, columns (loaded from assets/models)
+    ChainSystem chainSystem;
+    addProps(scene, dungeon, params, chainSystem);   // static props + dynamic hanging chains
 
     // place the camera at eye height in the center of the first room
     if (!dungeon.rooms.empty()) {
         Rect r = dungeon.rooms[0];
         float cx = (r.x + r.w * 0.5f) * params.tileSize;
         float cz = (r.y + r.h * 0.5f) * params.tileSize;
-        camera.Position = glm::vec3(cx, 1.6f, cz);
+        // offset off the room center so we do not spawn right inside the central brazier
+        camera.Position = glm::vec3(cx + params.tileSize, 1.6f, cz);
     }
 
     // --- renderer (GGX forward shading) ---
@@ -159,6 +173,9 @@ int main() {
         // push the player out of any wall it tried to walk into
         camera.Position = resolveWallCollisions(camera.Position, PLAYER_RADIUS, scene);
 
+        // advance the swinging chains (Verlet) and write their transforms back into the scene
+        chainSystem.update(deltaTime, camera.Position, PLAYER_RADIUS, scene);
+
         // start a new ImGui frame (before drawing anything)
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -183,7 +200,7 @@ int main() {
         ImGui::Text("Lights        : %d", metrics.activeLights);
         ImGui::Separator();
         ImGui::Text("Frustum culling: %s", cullingEnabled ? "ON" : "OFF");
-        ImGui::TextDisabled("C toggle culling - WASD move - Shift sprint - ESC quit");
+        ImGui::TextDisabled("TAB free cursor (move/collapse HUD) - C culling - WASD move - Shift sprint - ESC quit");
         ImGui::End();
 
         // draw the HUD on top of the scene, then present the frame

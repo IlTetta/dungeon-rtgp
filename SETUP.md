@@ -59,13 +59,15 @@ Se la vedi, la toolchain e le librerie funzionano.
 
 ---
 
-## 4. Cosa NON ti serve (per ora)
+## 4. Dipendenze e asset (già nel repo)
 
-- **ImGui**: non è nel repo (non c'era nemmeno nel lab). Lo aggiungeremo insieme quando
-  faremo l'HUD (M2). Fino ad allora il progetto compila senza.
-- **Assimp**: serve solo per caricare modelli da file (prop). Non è nel repo perché la sua
-  libreria è enorme (>100 MB, oltre il limite di GitHub). La gestiremo quando servirà.
-- **Bullet**: non lo usiamo (le collisioni le facciamo con un test ad-hoc).
+È tutto già committato: cloni e compili, non devi procurarti nulla.
+- **Dear ImGui** (HUD prestazioni) → sorgenti in `external/imgui/`, compilati col progetto.
+- **stb_image** (caricamento texture) → header in `external/stb/`.
+- **Modelli e texture** dei prop in `assets/props/`, texture delle superfici in `assets/textures/`
+  (vengono copiate accanto all'eseguibile a ogni build, come `shaders/`).
+- **Assimp**: NON usato — i modelli `.obj` li carica un nostro loader (niente libreria da 500 MB).
+- **Bullet**: NON usato — collisioni ad-hoc e catene con fisica **Verlet** scritta da noi.
 
 ---
 

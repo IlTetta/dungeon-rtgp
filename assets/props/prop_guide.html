@@ -1,0 +1,293 @@
+<title>Dungeon Prop Codex</title>
+<style>
+  :root{
+    --ground:#efe8db; --surface:#f7f2e8; --surface-2:#e7ddca; --panel:#faf6ee;
+    --ink:#241f17; --ink-soft:#5f5646; --ink-faint:#8a7f6b; --line:#dacfb8;
+    --accent:#b5661a; --accent-ink:#8a4d13; --accent-soft:#eccf9f;
+    --mat-stone:#79838f; --mat-wood:#a06b39; --mat-iron:#67727f; --mat-clay:#b45f3d; --mat-fire:#cf8121;
+    --shadow:0 1px 2px rgba(40,30,15,.06),0 8px 24px rgba(40,30,15,.07);
+    --font-display:"Palatino Linotype","Book Antiqua",Palatino,"Iowan Old Style",Georgia,serif;
+    --font-body:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --font-mono:"Cascadia Code","JetBrains Mono",ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
+  }
+  :root:not([data-theme="light"]){}
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#141109; --surface:#1d180f; --surface-2:#282013; --panel:#211b11;
+      --ink:#ece4d3; --ink-soft:#ab9f88; --ink-faint:#7c7159; --line:#332a1a;
+      --accent:#e0973f; --accent-ink:#eeb268; --accent-soft:#5f4016;
+      --mat-stone:#8b96a3; --mat-wood:#bd8146; --mat-iron:#8593a1; --mat-clay:#cf7350; --mat-fire:#e19a34;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#141109; --surface:#1d180f; --surface-2:#282013; --panel:#211b11;
+    --ink:#ece4d3; --ink-soft:#ab9f88; --ink-faint:#7c7159; --line:#332a1a;
+    --accent:#e0973f; --accent-ink:#eeb268; --accent-soft:#5f4016;
+    --mat-stone:#8b96a3; --mat-wood:#bd8146; --mat-iron:#8593a1; --mat-clay:#cf7350; --mat-fire:#e19a34;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.35);
+  }
+
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family:var(--font-body); font-size:16px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1060px; margin:0 auto; padding:clamp(20px,4vw,56px) clamp(16px,4vw,40px) 72px}
+  a{color:var(--accent-ink); text-underline-offset:2px}
+
+  /* ---- header ---- */
+  header.top{border-bottom:1px solid var(--line); padding-bottom:28px; margin-bottom:36px}
+  .eyebrow{font-family:var(--font-mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--accent-ink); margin:0 0 12px}
+  h1{font-family:var(--font-display); font-weight:600; letter-spacing:.01em;
+    font-size:clamp(2.1rem,5.4vw,3.5rem); line-height:1.02; margin:0; text-wrap:balance}
+  .lede{font-size:clamp(1rem,2.2vw,1.15rem); color:var(--ink-soft); max-width:60ch; margin:16px 0 22px}
+  .chips{display:flex; flex-wrap:wrap; gap:8px}
+  .chip{font-family:var(--font-mono); font-size:12px; letter-spacing:.02em; color:var(--ink-soft);
+    background:var(--surface); border:1px solid var(--line); border-radius:999px; padding:5px 11px}
+  .chip b{color:var(--ink); font-weight:600}
+
+  section{margin-top:52px}
+  h2{font-family:var(--font-display); font-weight:600; font-size:clamp(1.4rem,3.2vw,1.9rem);
+    margin:0 0 6px; letter-spacing:.01em}
+  .sub{color:var(--ink-soft); margin:0 0 22px; max-width:66ch}
+  .kicker{font-family:var(--font-mono); font-size:12px; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--ink-faint); display:block; margin-bottom:10px}
+
+  /* ---- pivot legend ---- */
+  .pivots{display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px}
+  .pivot{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px; box-shadow:var(--shadow)}
+  .pivot svg{width:100%; height:104px; display:block; margin-bottom:12px}
+  .pivot h3{font-family:var(--font-body); font-size:1.02rem; margin:0 0 4px; display:flex; align-items:center; gap:8px}
+  .pivot p{margin:0; font-size:.9rem; color:var(--ink-soft)}
+  .tag{font-family:var(--font-mono); font-size:11px; letter-spacing:.04em; text-transform:uppercase;
+    padding:2px 8px; border-radius:6px; border:1px solid var(--line); color:var(--ink-soft); background:var(--surface)}
+  .diag-ground,.diag-wall{stroke:var(--ink-faint)}
+  .diag-box{fill:var(--surface-2); stroke:var(--ink-soft)}
+  .diag-pivot-ring{fill:none; stroke:var(--accent)}
+  .diag-pivot{fill:var(--accent)}
+  .diag-arrow{stroke:var(--accent); fill:none}
+  .diag-arrow-head{fill:var(--accent)}
+  .diag-dash{stroke:var(--ink-faint); stroke-dasharray:3 4}
+
+  /* ---- prop cards ---- */
+  .grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(238px,1fr)); gap:16px}
+  .card{position:relative; background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:18px 18px 16px; overflow:hidden; box-shadow:var(--shadow); transition:transform .16s ease, border-color .16s ease}
+  .card::before{content:""; position:absolute; inset:0 auto 0 0; width:4px; background:var(--mat)}
+  .card:hover{transform:translateY(-3px); border-color:var(--accent-soft)}
+  .card .head{display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin-bottom:4px}
+  .card h3{font-family:var(--font-display); font-size:1.28rem; font-weight:600; margin:0}
+  .mat{font-family:var(--font-mono); font-size:10.5px; letter-spacing:.06em; text-transform:uppercase;
+    color:var(--mat); border:1px solid var(--mat); border-radius:6px; padding:2px 6px; white-space:nowrap;
+    opacity:.95}
+  .placement{font-size:.9rem; color:var(--ink-soft); margin:8px 0 14px}
+  .placement b{color:var(--ink); font-weight:600}
+  .specs{display:grid; grid-template-columns:auto 1fr; gap:3px 12px; font-family:var(--font-mono);
+    font-size:12px; border-top:1px dashed var(--line); padding-top:12px}
+  .specs dt{color:var(--ink-faint); letter-spacing:.02em}
+  .specs dd{margin:0; color:var(--ink); font-variant-numeric:tabular-nums; text-align:right}
+  .pv{display:inline-block; font-size:10px; letter-spacing:.05em; text-transform:uppercase;
+    padding:1px 6px; border-radius:5px; background:var(--surface-2); color:var(--ink-soft)}
+
+  /* ---- integration + code ---- */
+  .split{display:grid; grid-template-columns:1fr; gap:22px}
+  @media(min-width:760px){.split{grid-template-columns:1.05fr .95fr}}
+  ul.check{list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:12px}
+  ul.check li{position:relative; padding-left:30px; font-size:.94rem}
+  ul.check li::before{content:""; position:absolute; left:2px; top:7px; width:11px; height:11px; border-radius:3px;
+    background:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+  ul.check b{color:var(--ink)}
+  pre{margin:0; background:var(--surface); border:1px solid var(--line); border-radius:12px;
+    padding:16px 18px; overflow-x:auto; font-family:var(--font-mono); font-size:12.5px; line-height:1.65; color:var(--ink)}
+  pre .c{color:var(--ink-faint)}
+  pre .k{color:var(--accent-ink)}
+  pre .s{color:var(--mat-wood)}
+  .callout{background:var(--surface); border:1px solid var(--line); border-left:3px solid var(--accent);
+    border-radius:10px; padding:14px 16px; font-size:.92rem; color:var(--ink-soft); margin-top:20px}
+  .callout b{color:var(--ink)}
+
+  footer{margin-top:60px; padding-top:22px; border-top:1px solid var(--line);
+    font-size:.85rem; color:var(--ink-faint); display:flex; flex-wrap:wrap; gap:6px 18px; justify-content:space-between}
+  footer .mono{font-family:var(--font-mono)}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <p class="eyebrow">Dungeon Asset Set · OpenGL 4.1</p>
+    <h1>Dungeon Prop Codex</h1>
+    <p class="lede">Ten hand-built props for a first-person dungeon, ready to drop into a procedural
+      generator. What each one is, how big it is, and where it wants to stand.</p>
+    <div class="chips">
+      <span class="chip"><b>10</b> props</span>
+      <span class="chip">OBJ + PNG · <b>no .mtl</b></span>
+      <span class="chip"><b>1 unit</b> = 1 world unit</span>
+      <span class="chip">Y-up · &minus;Z-forward</span>
+      <span class="chip">one texture / prop</span>
+    </div>
+  </header>
+
+  <section>
+    <span class="kicker">Read this first</span>
+    <h2>Three ways a prop attaches</h2>
+    <p class="sub">Every prop's origin sits at a deliberate point so your spawner can position it with a
+      single transform. Match the prop's pivot type to the surface you're placing it on.</p>
+    <div class="pivots">
+      <div class="pivot">
+        <svg viewBox="0 0 200 108" role="img" aria-label="Floor pivot: origin at the base center on the ground">
+          <line class="diag-ground" x1="20" y1="88" x2="180" y2="88" stroke-width="2"/>
+          <rect class="diag-box" x="74" y="40" width="52" height="48" rx="3" stroke-width="1.5"/>
+          <line class="diag-dash" x1="100" y1="40" x2="100" y2="88" stroke-width="1"/>
+          <circle class="diag-pivot-ring" cx="100" cy="88" r="8" stroke-width="1.5"/>
+          <circle class="diag-pivot" cx="100" cy="88" r="3.5"/>
+        </svg>
+        <h3><span class="tag">Floor</span></h3>
+        <p>Origin at <b>base center</b>. Set it on the floor point; any yaw works. 8 of 10 props.</p>
+      </div>
+      <div class="pivot">
+        <svg viewBox="0 0 200 108" role="img" aria-label="Wall pivot: origin at the wall contact, facing into the room">
+          <line class="diag-wall" x1="46" y1="14" x2="46" y2="98" stroke-width="3"/>
+          <rect class="diag-box" x="46" y="44" width="30" height="26" rx="2" stroke-width="1.5"/>
+          <path class="diag-arrow" d="M78 57 H150" stroke-width="2"/>
+          <path class="diag-arrow-head" d="M150 51 L164 57 L150 63 Z"/>
+          <circle class="diag-pivot-ring" cx="46" cy="70" r="8" stroke-width="1.5"/>
+          <circle class="diag-pivot" cx="46" cy="70" r="3.5"/>
+        </svg>
+        <h3><span class="tag">Wall</span> torch</h3>
+        <p>Origin at the <b>wall contact</b> (back-plate base). Align its back to the wall normal, mount ~1.9u up.</p>
+      </div>
+      <div class="pivot">
+        <svg viewBox="0 0 200 108" role="img" aria-label="Hanging pivot: vertical segment, origin at the lower end">
+          <line class="diag-ground" x1="60" y1="16" x2="140" y2="16" stroke-width="3"/>
+          <g class="diag-box" stroke-width="1.5" fill="none">
+            <ellipse cx="100" cy="30" rx="7" ry="10"/><ellipse cx="100" cy="46" rx="7" ry="10"/>
+            <ellipse cx="100" cy="62" rx="7" ry="10"/><ellipse cx="100" cy="78" rx="7" ry="10"/>
+          </g>
+          <circle class="diag-pivot-ring" cx="100" cy="90" r="8" stroke-width="1.5"/>
+          <circle class="diag-pivot" cx="100" cy="90" r="3.5"/>
+        </svg>
+        <h3><span class="tag">Hanging</span> chain</h3>
+        <p>Vertical segment, origin at the <b>lower end</b>. Offset so the top meets the ceiling anchor, or rotate 180&deg;.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <span class="kicker">The set</span>
+    <h2>Ten props, one coherent world</h2>
+    <p class="sub">Colour-coded by material — weathered stone, warm oak, dark iron, terracotta, ember.
+      Triangle counts are per prop; textures are 1024&sup2; unless noted.</p>
+    <div class="grid">
+
+      <article class="card" style="--mat:var(--mat-stone)">
+        <div class="head"><h3>Column</h3><span class="mat">Stone</span></div>
+        <p class="placement">Along walls or in <b>rows</b>; the 3u height spans floor-to-ceiling. Random 90&deg; yaw for variety.</p>
+        <dl class="specs"><dt>Tris</dt><dd>364</dd><dt>Size</dt><dd>0.78 &times; 0.78 &times; 3.00</dd><dt>Pivot</dt><dd><span class="pv">floor</span></dd></dl>
+      </article>
+
+      <article class="card" style="--mat:var(--mat-wood)">
+        <div class="head"><h3>Crate</h3><span class="mat">Wood</span></div>
+        <p class="placement">Storage rooms, corners, against walls. <b>Stackable</b> — spawn 1–3 with random yaw.</p>
+        <dl class="specs"><dt>Tris</dt><dd>572</dd><dt>Size</dt><dd>0.90 &times; 0.90 &times; 0.85</dd><dt>Pivot</dt><dd><span class="pv">floor</span></dd></dl>
+      </article>
+
+      <article class="card" style="--mat:var(--mat-wood)">
+        <div class="head"><h3>Barrel</h3><span class="mat">Wood + iron</span></div>
+        <p class="placement">Clusters of 2–3 alongside crates; storerooms & taverns. Random yaw.</p>
+        <dl class="specs"><dt>Tris</dt><dd>304</dd><dt>Size</dt><dd>0.72 &times; 0.70 &times; 1.00</dd><dt>Pivot</dt><dd><span class="pv">floor</span></dd></dl>
+      </article>
+
+      <article class="card" style="--mat:var(--mat-clay)">
+        <div class="head"><h3>Urn</h3><span class="mat">Terracotta</span></div>
+        <p class="placement">Alcoves, wall lines, temple rooms. Small clusters; occasional broken one via random scale.</p>
+        <dl class="specs"><dt>Tris</dt><dd>380</dd><dt>Size</dt><dd>0.70 &times; 0.70 &times; 0.90</dd><dt>Pivot</dt><dd><span class="pv">floor</span></dd></dl>
+      </article>
+
+      <article class="card" style="--mat:var(--mat-fire)">
+        <div class="head"><h3>Brazier</h3><span class="mat">Iron + ember</span></div>
+        <p class="placement"><b>Light source.</b> Room centers or flanking the altar. Add a warm point light + flame above the coals.</p>
+        <dl class="specs"><dt>Tris</dt><dd>372</dd><dt>Size</dt><dd>0.73 &times; 0.73 &times; 0.75</dd><dt>Pivot</dt><dd><span class="pv">floor</span></dd></dl>
+      </article>
+
+      <article class="card" style="--mat:var(--mat-iron)">
+        <div class="head"><h3>Wall torch</h3><span class="mat">Iron</span></div>
+        <p class="placement"><b>Light source.</b> Along corridor & room walls every 4–6u, ~1.9u high. Add point light + flame at the crown.</p>
+        <dl class="specs"><dt>Tris</dt><dd>844</dd><dt>Size</dt><dd>0.23 &times; 0.50 &times; 0.79</dd><dt>Pivot</dt><dd><span class="pv">wall</span></dd></dl>
+      </article>
+
+      <article class="card" style="--mat:var(--mat-iron)">
+        <div class="head"><h3>Chain</h3><span class="mat">Iron</span></div>
+        <p class="placement">From ceilings & manacles. <b>Scale &amp; repeat</b> the segment for longer runs. Decorative.</p>
+        <dl class="specs"><dt>Tris</dt><dd>1 536</dd><dt>Size</dt><dd>0.11 &times; 0.11 &times; 0.97</dd><dt>Pivot</dt><dd><span class="pv">hanging</span></dd></dl>
+      </article>
+
+      <article class="card" style="--mat:var(--mat-stone)">
+        <div class="head"><h3>Rubble</h3><span class="mat">Stone</span></div>
+        <p class="placement"><b>Scatter</b> near broken walls & corners. Random yaw + scale (0.7–1.4). Cheapest prop — sprinkle freely.</p>
+        <dl class="specs"><dt>Tris</dt><dd>200</dd><dt>Size</dt><dd>1.18 &times; 1.14 &times; 0.50</dd><dt>Pivot</dt><dd><span class="pv">floor</span></dd></dl>
+      </article>
+
+      <article class="card" style="--mat:var(--mat-stone)">
+        <div class="head"><h3>Altar</h3><span class="mat">Stone</span></div>
+        <p class="placement"><b>Centerpiece</b> of a special / boss room. Center of the room or against the far wall.</p>
+        <dl class="specs"><dt>Tris</dt><dd>440</dd><dt>Size</dt><dd>1.30 &times; 0.92 &times; 1.09</dd><dt>Pivot</dt><dd><span class="pv">floor</span></dd></dl>
+      </article>
+
+      <article class="card" style="--mat:var(--mat-stone)">
+        <div class="head"><h3>Statue</h3><span class="mat">Marble scan</span></div>
+        <p class="placement"><b>Unique showpiece — one per level.</b> Flank the altar or set in a niche, facing the entrance.</p>
+        <dl class="specs"><dt>Tris</dt><dd>~85 k</dd><dt>Size</dt><dd>0.62 &times; 0.51 &times; 1.75</dd><dt>Tex</dt><dd>2048&sup2;</dd><dt>Pivot</dt><dd><span class="pv">floor</span></dd></dl>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <span class="kicker">Wiring it up</span>
+    <h2>From spawner to screen</h2>
+    <div class="split">
+      <div>
+        <ul class="check">
+          <li>Load the OBJ, bind <b>&lt;name&gt;_albedo.png</b> as base color. Add <b>_normal</b> (OpenGL +Y) and <b>_roughness</b> on the same UVs when your PBR path is ready.</li>
+          <li>Textures upside-down? Flip V in the loader — <b>stbi_set_flip_vertically_on_load(true)</b>.</li>
+          <li><b>Brazier &amp; torch are lights.</b> Spawn a warm point light (~1800K) + an animated flame billboard at the fire. The baked embers carry the glow.</li>
+          <li><b>Colliders:</b> box / cylinder / capsule from the bounding box — never the raw mesh, above all not the 85k statue.</li>
+          <li>Everything shares scale: the column's 3u height <b>is</b> your room height — size rooms around it.</li>
+        </ul>
+        <div class="callout">
+          <b>Credit the statue.</b> It's a museum photoscan — <i>Mourner from the Tomb of Philip the Bold</i> (Scan the World), almost certainly <b>CC-BY</b>. Name the source in your report and in-game credits.
+        </div>
+      </div>
+      <div>
+        <pre><span class="c">// engine-agnostic spawn sketch</span>
+<span class="k">void</span> placeFloorProp(Prop p, vec2 cell) {
+  vec3 pos = floorPoint(cell);      <span class="c">// origin = base center</span>
+  <span class="k">float</span> yaw = random(0, TWO_PI);
+  spawn(p, pos, yaw);
+}
+
+<span class="k">void</span> placeTorch(vec3 wallPt, vec3 wallN) {
+  vec3 pos = wallPt + wallN*0.0;    <span class="c">// origin sits on the wall</span>
+  <span class="k">float</span> yaw = atan2(wallN.x, wallN.z);
+  pos.y = <span class="s">1.9</span>;
+  spawn(<span class="s">"torch"</span>, pos, yaw);
+  addPointLight(pos + up*0.2, WARM); <span class="c">// + flame billboard</span>
+}
+
+<span class="c">// rubble: cheap, scatter it</span>
+<span class="k">for</span> (i = 0; i &lt; n; i++)
+  spawn(<span class="s">"rubble"</span>, jitter(corner),
+        random(0,TWO_PI), randScale(<span class="s">0.7</span>,<span class="s">1.4</span>));</pre>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Dungeon prop set · built in Blender, baked to albedo / normal / roughness</span>
+    <span class="mono">10 props · assets/props/&lt;name&gt;/</span>
+  </footer>
+</div>

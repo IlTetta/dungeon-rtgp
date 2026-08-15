@@ -10,12 +10,6 @@ Renderer::Renderer(const char* vertexPath, const char* fragmentPath)
 {
     glEnable(GL_DEPTH_TEST);
     projection = glm::mat4(1.0f);
-
-    // load one albedo texture per material (placeholders for now: a stone-ish floor and a
-    // UV grid for walls/props, easy to swap for real dungeon textures later)
-    texFloor = loadTexture("assets/textures/SoilCracked.png");
-    texWall  = loadTexture("assets/textures/UV_Grid_Sm.png");
-    texProp  = loadTexture("assets/textures/UV_Grid_Sm.png");
 }
 
 void Renderer::setViewport(int width, int height) {
@@ -30,49 +24,6 @@ void Renderer::setViewport(int width, int height) {
     // far plane at 500: the dungeon can be ~130 units across on the diagonal, so a nearer far
     // plane (e.g. 100) would clip distant geometry.
     projection = glm::perspective(glm::radians(fovDegrees), aspect, 0.1f, 500.0f);
-}
-
-GLuint Renderer::albedoTexture(MaterialId material) const {
-    switch (material) {
-        case MAT_FLOOR: return texFloor;
-        case MAT_WALL:  return texWall;
-        case MAT_PROP:  return texProp;
-        default:        return texWall;
-    }
-}
-
-float Renderer::uvScaleForMaterial(MaterialId material) const {
-    // walls and floors are big flat surfaces: repeat the texture a couple of times so it does
-    // not look stretched. Props keep their model's own uv layout (no extra tiling).
-    switch (material) {
-        case MAT_FLOOR: return 2.0f;
-        case MAT_WALL:  return 2.0f;
-        default:        return 1.0f;
-    }
-}
-
-float Renderer::roughnessForMaterial(MaterialId material) const {
-    // "a" in the GGX formulas: 0 = mirror-smooth, 1 = very rough. All our current
-    // materials are rough, unpolished surfaces (stone, wood), so these are all on the
-    // rough half of the range; a shinier PROP (metal torch holder) would get a lower
-    // value once we split materials further.
-    switch (material) {
-        case MAT_FLOOR: return 0.85f;   // worn, uneven stone
-        case MAT_WALL:  return 0.75f;   // rough-cut stone
-        case MAT_PROP:  return 0.45f;   // wood/metal, a bit smoother
-        default:         return 0.7f;
-    }
-}
-
-glm::vec3 Renderer::f0ForMaterial(MaterialId material) const {
-    // F0 = reflectance at 0 degrees incidence. For ordinary (non-metal) "dielectric"
-    // materials this is nearly grey and close to 0.04, regardless of the material's
-    // actual color (that is a well-known simplification used until we add a proper
-    // metalness workflow with textures). None of our current materials are metals, so
-    // every material gets the same placeholder value for now.
-    (void)material;   // not used yet, kept as a parameter so callers do not need to change
-                       // once different materials need different F0 (e.g. a metal prop)
-    return glm::vec3(0.04f);
 }
 
 void Renderer::render(const Scene& scene, Camera& camera, FrameMetrics& metrics) {
@@ -126,13 +77,14 @@ void Renderer::render(const Scene& scene, Camera& camera, FrameMetrics& metrics)
             continue;   // outside the view: skip it
 
         shader.setMat4("model", obj.modelMatrix);
-        // bind the albedo texture for this material to texture unit 0 and tell the sampler
+        // look up this object's material and bind its albedo texture to unit 0
+        const Material& mat = scene.materials[obj.materialIndex];
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, albedoTexture(obj.material));
+        glBindTexture(GL_TEXTURE_2D, mat.albedo);
         shader.setInt("albedoMap", 0);
-        shader.setFloat("uvScale", uvScaleForMaterial(obj.material));
-        shader.setFloat("roughness", roughnessForMaterial(obj.material));
-        shader.setVec3("F0", f0ForMaterial(obj.material));
+        shader.setFloat("uvScale", mat.uvScale);
+        shader.setFloat("roughness", mat.roughness);
+        shader.setVec3("F0", mat.F0);
 
         // obj.meshIndex is an index into scene.meshes (see the comment in scene.h on why
         // we store an index here and not a pointer/reference to the Mesh directly)

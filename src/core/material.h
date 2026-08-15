@@ -11,5 +11,7 @@
 enum MaterialId {
     MAT_FLOOR,
     MAT_WALL,
-    MAT_PROP    // torch holders, small decorations, ...
+    MAT_CEILING,
+    MAT_PROP,   // solid props (blocks the player): columns, statues, barrels, ...
+    MAT_CHAIN   // dynamic, non-blocking decor (chains): the player walks through and swings them
 };

@@ -23,7 +23,7 @@ uniform vec3 viewPos;   // world-space camera position, needed to build V
 
 // mirrors Scene::lights (src/core/scene.h) as plain arrays; MAX_LIGHTS must match the
 // constant with the same name in renderer.h.
-#define MAX_LIGHTS 16
+#define MAX_LIGHTS 32
 
 uniform int numLights;
 uniform vec3 lightPositions[MAX_LIGHTS];
@@ -33,7 +33,7 @@ uniform float lightRadii[MAX_LIGHTS];
 
 const float PI = 3.14159265359;
 
-const float AMBIENT = 0.03;
+const float AMBIENT = 0.12;   // base fill light so unlit areas (corridors) are not pitch black
 
 // D: GGX / Trowbridge-Reitz normal distribution function
 float distributionGGX(vec3 N, vec3 H, float a) {
