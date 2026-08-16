@@ -67,10 +67,32 @@ public:
     // or removes meshes/objects (that is Andrea's side, in src/world/).
     void render(const Scene& scene, Camera& camera, FrameMetrics& metrics);
 
+    // DEBUG / M3 tooling (Andrea): draw the scene from an arbitrary "spectator" viewpoint
+    // (explicit view matrix + eye position) while culling against a DIFFERENT, frozen frustum
+    // (normally the player's). This is what lets a second, far camera SHOW the frustum culling
+    // in action: geometry outside the player frustum disappears even though we look from above.
+    //   - view / eye : where we DRAW from (the spectator camera),
+    //   - cullFrustum : what we CULL against (the player's frustum, frozen),
+    //   - hideCeiling : skip MAT_CEILING objects, so an overhead view can see inside the dungeon.
+    // The normal render() above is unchanged (Lorenzo's call site keeps working); both share the
+    // same drawing core (renderInternal).
+    void renderSpectator(const Scene& scene, const glm::mat4& view, const glm::vec3& eye,
+                         const Frustum& cullFrustum, bool hideCeiling, FrameMetrics& metrics);
+
+    // The current projection matrix (built by setViewport). main needs it to build the player's
+    // view-projection for the frozen frustum and for the debug frustum wireframe.
+    const glm::mat4& getProjection() const { return projection; }
+
     // Frees the GPU shader program. Call once, when the application closes.
     void clean();
 
 private:
+    // The shared drawing core used by both render() and renderSpectator(): clear, set the
+    // per-frame uniforms (view/eye/lights), then one draw call per VISIBLE object, culling each
+    // object's AABB against `cullFrustum` (when cullingEnabled) and optionally skipping ceilings.
+    void renderInternal(const Scene& scene, const glm::mat4& view, const glm::vec3& eye,
+                        const Frustum& cullFrustum, bool hideCeiling, FrameMetrics& metrics);
+
     Shader shader;
     glm::mat4 projection;
 

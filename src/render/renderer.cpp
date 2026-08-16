@@ -27,6 +27,22 @@ void Renderer::setViewport(int width, int height) {
 }
 
 void Renderer::render(const Scene& scene, Camera& camera, FrameMetrics& metrics) {
+    // Normal (player) path: we DRAW from the camera and CULL against the very same camera's
+    // frustum, so the frustum is built here from this frame's view-projection (Andrea's
+    // Gribb-Hartmann extraction, in world/frustum_culling.h). Everything else is shared.
+    Frustum frustum = extractFrustum(projection * camera.getViewMatrix());
+    renderInternal(scene, camera.getViewMatrix(), camera.Position, frustum, /*hideCeiling*/false, metrics);
+}
+
+void Renderer::renderSpectator(const Scene& scene, const glm::mat4& view, const glm::vec3& eye,
+                               const Frustum& cullFrustum, bool hideCeiling, FrameMetrics& metrics) {
+    // Debug path: DRAW from `view`/`eye` (the far spectator camera) but CULL against the frozen
+    // `cullFrustum` we were handed (the player's). Same drawing core as render().
+    renderInternal(scene, view, eye, cullFrustum, hideCeiling, metrics);
+}
+
+void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const glm::vec3& eye,
+                              const Frustum& cullFrustum, bool hideCeiling, FrameMetrics& metrics) {
     // reset the counters: they describe THIS frame only. Since the culling now happens here,
     // the Renderer is the single writer for all of these object/draw counters.
     metrics.drawCalls = 0;
@@ -42,9 +58,9 @@ void Renderer::render(const Scene& scene, Camera& camera, FrameMetrics& metrics)
 
     // --- 2. things that are the same for the whole frame: camera + lights ---
     shader.use();
-    shader.setMat4("view", camera.getViewMatrix());
+    shader.setMat4("view", view);
     shader.setMat4("projection", projection);
-    shader.setVec3("viewPos", camera.Position);   // ggx.frag needs this to build V
+    shader.setVec3("viewPos", eye);   // ggx.frag needs this to build V
 
     // we can only send MAX_LIGHTS lights to the shader in one go; if the scene ever has
     // more torches than that, we simply take the first MAX_LIGHTS and drop the rest for
@@ -65,15 +81,18 @@ void Renderer::render(const Scene& scene, Camera& camera, FrameMetrics& metrics)
         shader.setFloat("lightRadii" + idx, light.radius);
     }
 
-    // --- 3. frustum culling: build the 6 planes from this frame's view-projection ---
-    // (Andrea's code, in world/frustum_culling.h). When culling is on, we skip every object
-    // whose AABB is completely outside these planes: it cannot be seen, so drawing it would
-    // just waste a draw call. This is the measurable optimization of the project.
-    Frustum frustum = extractFrustum(projection * camera.getViewMatrix());
-
-    // --- 4. one draw call per VISIBLE object in the scene ---
+    // --- 3. one draw call per VISIBLE object in the scene ---
+    // When culling is on, we skip every object whose AABB is completely outside `cullFrustum`:
+    // it cannot be seen, so drawing it would just waste a draw call. This is the measurable
+    // optimization of the project. In the spectator debug view `cullFrustum` is the player's
+    // (frozen), so we watch objects pop out as the player looks away from them.
     for (const RenderObject& obj : scene.objects) {
-        if (cullingEnabled && !isAABBVisible(frustum, obj.worldBounds))
+        // debug overhead view: drop the ceiling slabs, otherwise a top-down camera only sees
+        // the closed roof and never the rooms below.
+        if (hideCeiling && obj.material == MAT_CEILING)
+            continue;
+
+        if (cullingEnabled && !isAABBVisible(cullFrustum, obj.worldBounds))
             continue;   // outside the view: skip it
 
         shader.setMat4("model", obj.modelMatrix);

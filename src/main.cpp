@@ -29,6 +29,9 @@
 #include "world/props.h"
 #include "world/chain_physics.h"
 #include "world/collision.h"
+#include "world/world_builder.h"     // buildWorld(): (re)generate the whole dungeon from a seed
+#include "world/debug_draw.h"        // DebugDraw: frustum wireframe for the spectator view
+#include "world/frustum_culling.h"   // extractFrustum / Frustum, to freeze the player frustum
 #include "render/renderer.h"
 
 // Dear ImGui (performance HUD)
@@ -50,6 +53,11 @@ bool cullingEnabled = true;
 // (drag it, collapse it), and the camera stops turning. TAB again goes back to first-person.
 bool uiMode = false;
 
+// debug spectator camera (toggled with V): we DRAW the scene from far above the player, while the
+// frustum culling keeps using the PLAYER frustum. This lets us watch, from outside, exactly what
+// the culling draws/skips as we move and turn. It is an M3 tool, off by default.
+bool debugCamEnabled = false;
+
 // globals used by the input callbacks (same simple approach as the lab code)
 Camera camera(glm::vec3(0.0f, 1.6f, 0.0f), true);   // start position is set later, after we build the level
 bool keys[1024] = { false };
@@ -66,6 +74,9 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
     // toggle frustum culling on/off
     if (key == GLFW_KEY_C && action == GLFW_PRESS)
         cullingEnabled = !cullingEnabled;
+    // toggle the debug spectator camera (far, top-down view of the culling)
+    if (key == GLFW_KEY_V && action == GLFW_PRESS)
+        debugCamEnabled = !debugCamEnabled;
     // TAB: toggle the mouse cursor free (to use the HUD) / captured (first-person look)
     if (key == GLFW_KEY_TAB && action == GLFW_PRESS) {
         uiMode = !uiMode;
@@ -130,26 +141,23 @@ int main() {
     }
 
     // --- build the dungeon and its 3D geometry (needs the OpenGL context, so we do it now) ---
-    DungeonParams params;   // default tile size / wall height
-    DungeonGenerator generator(60, 30, 12345);
-    Dungeon dungeon = generator.generate();
-    DungeonLayout layout = buildDungeonLayout(dungeon, params);
-    Scene scene = buildScene(layout);
+    // The whole pipeline (BSP generation -> geometry -> Scene -> props/chains -> camera spawn) is
+    // wrapped in buildWorld() so we can rebuild it from a new seed at runtime (see the HUD below).
+    DungeonParams params;                 // default tile size / wall height
+    unsigned int dungeonSeed = 12345;     // seed of the CURRENT dungeon (editable from the HUD)
+    Scene scene;
     ChainSystem chainSystem;
-    addProps(scene, dungeon, params, chainSystem);   // static props + dynamic hanging chains
-
-    // place the camera at eye height in the center of the first room
-    if (!dungeon.rooms.empty()) {
-        Rect r = dungeon.rooms[0];
-        float cx = (r.x + r.w * 0.5f) * params.tileSize;
-        float cz = (r.y + r.h * 0.5f) * params.tileSize;
-        // offset off the room center so we do not spawn right inside the central brazier
-        camera.Position = glm::vec3(cx + params.tileSize, 1.6f, cz);
-    }
+    buildWorld(dungeonSeed, params, scene, chainSystem, camera);   // static props + hanging chains
 
     // --- renderer (GGX forward shading) ---
     Renderer renderer("shaders/ggx.vert", "shaders/ggx.frag");
     renderer.setViewport(WIDTH, HEIGHT);
+
+    // --- debug tooling (M3) ---
+    DebugDraw debugDraw;              // draws the player frustum wireframe in the spectator view
+    float debugCamHeight = 35.0f;     // how high above the player the spectator camera sits
+    bool  showFrustumWire = true;     // draw the yellow frustum cage in the spectator view
+    bool  debugCamFollowYaw = true;   // chase cam (follows where the player looks) vs fixed north-up
 
     // --- init Dear ImGui (for the performance HUD) ---
     IMGUI_CHECKVERSION();
@@ -184,7 +192,35 @@ int main() {
         // draw the whole scene (this clears the screen, does the culling, and fills the
         // object/draw/light counters in "metrics")
         renderer.cullingEnabled = cullingEnabled;
-        renderer.render(scene, camera, metrics);
+        if (debugCamEnabled) {
+            // Freeze the PLAYER frustum: this is the volume we cull against, no matter where we
+            // draw from. (view-projection = projection * view of the first-person camera.)
+            glm::mat4 playerVP = renderer.getProjection() * camera.getViewMatrix();
+            Frustum playerFrustum = extractFrustum(playerVP);
+
+            // Place the spectator camera high above the player, looking down at a steep angle
+            // (not straight down) so we read both the map and the wall heights. Two modes:
+            //  - follow-yaw (chase cam): sit BEHIND the player along its look direction, so "up" on
+            //    screen is always where the player faces -> WASD stays intuitive.
+            //  - fixed: sit slightly to +Z, north-up. Nicer stable "sweep" view for screenshots,
+            //    but the controls feel mirrored when the player turns toward the camera.
+            glm::vec3 specEye;
+            if (debugCamFollowYaw)
+                specEye = camera.Position + glm::vec3(0.0f, debugCamHeight, 0.0f) - camera.WorldFront * (debugCamHeight * 0.5f);
+            else
+                specEye = camera.Position + glm::vec3(0.0f, debugCamHeight, debugCamHeight * 0.35f);
+            glm::mat4 specView = glm::lookAt(specEye, camera.Position, glm::vec3(0.0f, 1.0f, 0.0f));
+
+            // draw from the spectator, cull against the frozen player frustum, hide the ceiling
+            renderer.renderSpectator(scene, specView, specEye, playerFrustum, /*hideCeiling*/ true, metrics);
+
+            // overlay the player frustum as a yellow wireframe cage, so the culling volume is visible
+            if (showFrustumWire)
+                debugDraw.drawFrustum(playerVP, specView, renderer.getProjection(), glm::vec3(1.0f, 0.9f, 0.2f));
+        }
+        else {
+            renderer.render(scene, camera, metrics);
+        }
 
         // the two metrics that main is responsible for
         metrics.fps = ImGui::GetIO().Framerate;
@@ -200,7 +236,39 @@ int main() {
         ImGui::Text("Lights        : %d", metrics.activeLights);
         ImGui::Separator();
         ImGui::Text("Frustum culling: %s", cullingEnabled ? "ON" : "OFF");
-        ImGui::TextDisabled("TAB free cursor (move/collapse HUD) - C culling - WASD move - Shift sprint - ESC quit");
+
+        // --- M3 tools ---
+        // (1) regenerate the dungeon from a seed, live. ImGui has no unsigned field, so we edit an
+        // int and clamp it to >= 0 before casting back to the unsigned seed.
+        ImGui::Separator();
+        ImGui::Text("Dungeon");
+        int seedField = (int)dungeonSeed;
+        if (ImGui::InputInt("Seed", &seedField)) {
+            if (seedField < 0) seedField = 0;
+            dungeonSeed = (unsigned int)seedField;
+        }
+        if (ImGui::Button("Generate")) {
+            buildWorld(dungeonSeed, params, scene, chainSystem, camera);
+            firstMouse = true;   // the camera teleported: avoid a mouse-look jump next frame
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Random seed")) {
+            dungeonSeed = (unsigned int)(glfwGetTime() * 100000.0);
+            buildWorld(dungeonSeed, params, scene, chainSystem, camera);
+            firstMouse = true;
+        }
+
+        // (2) debug spectator camera controls
+        ImGui::Separator();
+        ImGui::Checkbox("Debug camera (V)", &debugCamEnabled);
+        if (debugCamEnabled) {
+            ImGui::Checkbox("Show frustum wireframe", &showFrustumWire);
+            ImGui::Checkbox("Follow player rotation", &debugCamFollowYaw);
+            ImGui::SliderFloat("Cam height", &debugCamHeight, 10.0f, 90.0f);
+        }
+
+        ImGui::Separator();
+        ImGui::TextDisabled("TAB cursor - C culling - V debug cam - WASD move - Shift sprint - ESC quit");
         ImGui::End();
 
         // draw the HUD on top of the scene, then present the frame
@@ -214,6 +282,7 @@ int main() {
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
+    debugDraw.clean();
     renderer.clean();
     glfwTerminate();
     return 0;
