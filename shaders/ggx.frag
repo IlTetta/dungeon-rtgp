@@ -2,8 +2,15 @@
 //
 // Fragment shader implementing the Cook-Torrance "FDG" specular BRDF with the GGX
 // (Trowbridge-Reitz) normal distribution, Schlick-GGX/Smith geometry term, and Schlick's
-// Fresnel approximation, plus a Lambert diffuse term.
-
+// Fresnel approximation, plus a Lambert diffuse term. The albedo comes from a per-object
+// texture (the material system in src/world/ / src/core/scene.h).
+//
+// M2 shadow mapping (Lorenzo): shadowPCF() below is transcribed from "Shadow_PCF_Final" in
+// 22_ggx_tex_shadow.frag (Davide Gadia, lecture07a) - same adaptive bias (0.05*(1-N.L),
+// clamped to 0.005), same 3x3 kernel, same "beyond the light far plane => no shadow" fix.
+// Difference from the professor's single directional light: here the shadow map is not one
+// but an array (up to MAX_SHADOW_LIGHTS), one per torch with Light::castsShadow == true,
+// selected per light through lightShadowSlot[i] (see Renderer::render in renderer.cpp).
 
 #version 410 core
 
@@ -11,12 +18,16 @@ in vec3 FragPos;
 in vec3 Normal;
 in vec2 TexCoords;
 
+// M2: vertex position in each shadow caster's light space (from ggx.vert).
+#define MAX_SHADOW_LIGHTS 3
+in vec4 posLightSpace[MAX_SHADOW_LIGHTS];
+
 out vec4 FragColor;
 
 // material
 uniform sampler2D albedoMap;   // base color (diffuse albedo), read from a texture
 uniform float uvScale;         // texture tiling: how many times it repeats across the UVs
-uniform float roughness;       // "a" in the formulas above, in [0,1]: 0 = mirror, 1 = very rough
+uniform float roughness;       // "a" in the formulas below, in [0,1]: 0 = mirror, 1 = very rough
 uniform vec3 F0;               // Fresnel reflectance at normal incidence (0 degrees)
 
 uniform vec3 viewPos;   // world-space camera position, needed to build V
@@ -30,6 +41,11 @@ uniform vec3 lightPositions[MAX_LIGHTS];
 uniform vec3 lightColors[MAX_LIGHTS];
 uniform float lightIntensities[MAX_LIGHTS];
 uniform float lightRadii[MAX_LIGHTS];
+
+// M2: for each light, the index (0..MAX_SHADOW_LIGHTS-1) of its shadow map, or -1 if this
+// light casts no shadow (then it stays "fully lit", like in M1). Set in renderer.cpp.
+uniform int lightShadowSlot[MAX_LIGHTS];
+uniform sampler2D shadowMaps[MAX_SHADOW_LIGHTS];
 
 const float PI = 3.14159265359;
 
@@ -65,6 +81,60 @@ float geometrySmith(float NdotV, float NdotL, float a) {
 vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
+
+// M2 shadow test - PCF version, transcribed from Shadow_PCF_Final in 22_ggx_tex_shadow.frag.
+// fragPosLightSpace and shadowMap are passed as parameters (not read from one global) because
+// here we can have up to MAX_SHADOW_LIGHTS torches, each with its own map; N and L are the
+// current light's, from the lighting loop in main().
+float shadowPCF(vec4 fragPosLightSpace, sampler2D shadowMap, vec3 N, vec3 L) {
+    // manual perspective divide (not automatic here, unlike gl_Position)
+    vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
+    projCoords = projCoords * 0.5 + 0.5;   // from [-1,1] to [0,1]
+
+    float currentDepth = projCoords.z;
+
+    // adaptive bias: more bias when the surface is grazing to the light (fights shadow acne),
+    // range [0.005, 0.05] - same formula as the professor's.
+    float bias = max(0.05 * (1.0 - dot(N, L)), 0.005);
+
+    float shadow = 0.0;
+    vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
+    for (int x = -1; x <= 1; ++x) {
+        for (int y = -1; y <= 1; ++y) {
+            float pcfDepth = texture(shadowMap, projCoords.xy + vec2(x, y) * texelSize).r;
+            shadow += (currentDepth - bias > pcfDepth) ? 1.0 : 0.0;
+        }
+    }
+    shadow /= 9.0;
+
+    // points beyond the light's far plane are never in shadow (same as the professor's)
+    if (projCoords.z > 1.0)
+        shadow = 0.0;
+
+    return shadow;
+}
+
+/* --- reference/debug versions, same logic as shadowPCF() but without the filter ---
+   (transcribed from Shadow_Acne / Shadow_Bias of the professor, kept here commented out:
+   handy while debugging to see the raw acne before the bias, or the bias without the PCF)
+
+float shadowAcne(vec4 fragPosLightSpace, sampler2D shadowMap) {
+    vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
+    projCoords = projCoords * 0.5 + 0.5;
+    float closestDepth = texture(shadowMap, projCoords.xy).r;
+    float currentDepth = projCoords.z;
+    return currentDepth > closestDepth ? 1.0 : 0.0;
+}
+
+float shadowBias(vec4 fragPosLightSpace, sampler2D shadowMap, vec3 N, vec3 L) {
+    vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
+    projCoords = projCoords * 0.5 + 0.5;
+    float closestDepth = texture(shadowMap, projCoords.xy).r;
+    float currentDepth = projCoords.z;
+    float bias = max(0.05 * (1.0 - dot(N, L)), 0.005);
+    return currentDepth - bias > closestDepth ? 1.0 : 0.0;
+}
+*/
 
 void main() {
     // read the base color from the texture (tiled by uvScale)
@@ -103,7 +173,15 @@ void main() {
         float atten = clamp(1.0 - dist / lightRadii[i], 0.0, 1.0);
         vec3 radiance = lightColors[i] * lightIntensities[i] * atten;
 
-        Lo += (diffuse + specular) * radiance * NdotL;
+        // M2: if this light is a shadow caster, weight its contribution by (1 - shadow),
+        // exactly like "finalColor = (1.0-shadow)*(lambert+specular)*NdotL" in the professor's
+        // code. Lights with no shadow map (lightShadowSlot[i] == -1) stay fully lit.
+        float shadow = 0.0;
+        int slot = lightShadowSlot[i];
+        if (slot >= 0 && slot < MAX_SHADOW_LIGHTS)
+            shadow = shadowPCF(posLightSpace[slot], shadowMaps[slot], N, L);
+
+        Lo += (1.0 - shadow) * (diffuse + specular) * radiance * NdotL;
     }
 
     vec3 ambient = AMBIENT * baseColor;
