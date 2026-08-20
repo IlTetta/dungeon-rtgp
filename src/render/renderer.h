@@ -52,13 +52,14 @@ public:
     static const int MAX_LIGHTS = 8;
 
     // M2: how many torches can cast a shadow AT THE SAME TIME, and must match
-    // "#define MAX_SHADOW_LIGHTS 3" in shaders/ggx.vert and shaders/ggx.frag. Lorenzo's
-    // scene design is "one torch per wall except the corridor one", so 1 to 3 per room -
-    // this is the max across the whole game, not per room, so it should stay 3 unless a
-    // room design changes. If Scene::lights ever contains more than MAX_SHADOW_LIGHTS
-    // lights with castsShadow == true, render() below just takes the first
-    // MAX_SHADOW_LIGHTS and the rest fall back to unshadowed (see the comment in
-    // render()).
+    // "#define MAX_SHADOW_LIGHTS 3" in shaders/ggx.vert and shaders/ggx.frag. This is a
+    // budget across the WHOLE game, not per room: Andrea's wall-torch/brazier count is a
+    // tunable variable and can be small or large, so render() does not just take "the
+    // first MAX_SHADOW_LIGHTS in Scene::lights" - every frame it picks the
+    // MAX_SHADOW_LIGHTS castsShadow lights closest to the camera (see the comment in
+    // render()), so real shadows follow the player from room to room. Any light that
+    // doesn't make the cut this frame falls back to unshadowed, same as any light with
+    // castsShadow == false - never a crash.
     static const int MAX_SHADOW_LIGHTS = 3;
 
     // Resolution of each shadow map (square). 1024 is the usual starting point for an

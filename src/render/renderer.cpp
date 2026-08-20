@@ -3,6 +3,8 @@
 
 #include "render/renderer.h"
 
+#include <glfw/glfw3.h>   // glfwGetTime(), used for the torch flicker animation
+#include <algorithm>   // std::sort, for the nearest-to-camera shadow light selection
 #include <string>   // std::to_string, used to build "lightPositions[i]" uniform names
 #include <vector>
 
@@ -138,20 +140,37 @@ void Renderer::render(const Scene& scene, Camera& camera, FrameMetrics& metrics)
 
     // --- M2, step 0: pick which torches cast a shadow this frame, and render their
     // depth maps BEFORE the main color pass (the main pass needs to sample them). ---
-    // We take the first MAX_SHADOW_LIGHTS lights with castsShadow == true, in the order
-    // Andrea's scene puts them in Scene::lights; if a room ever had more than that, the
-    // extra ones would just render unshadowed (same as any light with castsShadow ==
-    // false), not crash or get skipped from lighting entirely.
+    // The number of castsShadow torches in the dungeon is meant to vary a lot (Andrea's
+    // wall-torch/brazier placement is a tunable count, could end up small or large), while
+    // MAX_SHADOW_LIGHTS stays a fixed hardware/perf budget - so every frame we pick the
+    // MAX_SHADOW_LIGHTS shadow-casting lights CLOSEST TO THE CAMERA, not just "the first
+    // ones in Scene::lights". This way real shadows always follow the player from room to
+    // room, instead of being stuck forever on whichever torches happen to come first in
+    // the list. The professor's own lecture07a only ever handles a single light (its
+    // comment says so directly: "For more lights, of different kind, the shader must be
+    // modified to consider each case") - nearest-to-camera selection is the standard way a
+    // real engine extends single-shadow-map code to many dynamic lights, so it is the
+    // natural, realistic choice here. A light that doesn't make the cut this frame simply
+    // falls back to unshadowed (same as any light with castsShadow == false) - never a
+    // crash, never skipped from lighting entirely.
     int shadowLightIndex[MAX_SHADOW_LIGHTS];   // -> index into scene.lights
     glm::mat4 lightSpaceMatrices[MAX_SHADOW_LIGHTS];
     int numShadowLights = 0;
 
-    for (size_t i = 0; i < scene.lights.size() && numShadowLights < MAX_SHADOW_LIGHTS; ++i) {
-        if (scene.lights[i].castsShadow) {
-            shadowLightIndex[numShadowLights] = (int)i;
-            lightSpaceMatrices[numShadowLights] = computeLightSpaceMatrix(scene.lights[i]);
-            numShadowLights++;
-        }
+    std::vector<int> shadowCandidates;
+    for (size_t i = 0; i < scene.lights.size(); ++i) {
+        if (scene.lights[i].castsShadow) shadowCandidates.push_back((int)i);
+    }
+    std::sort(shadowCandidates.begin(), shadowCandidates.end(), [&](int a, int b) {
+        glm::vec3 da = scene.lights[a].position - camera.Position;
+        glm::vec3 db = scene.lights[b].position - camera.Position;
+        return glm::dot(da, da) < glm::dot(db, db);   // squared distance: avoids MAX_SHADOW_LIGHTS sqrt() calls
+    });
+    for (int idx : shadowCandidates) {
+        if (numShadowLights >= MAX_SHADOW_LIGHTS) break;
+        shadowLightIndex[numShadowLights] = idx;
+        lightSpaceMatrices[numShadowLights] = computeLightSpaceMatrix(scene.lights[idx]);
+        numShadowLights++;
     }
 
     for (int slot = 0; slot < numShadowLights; ++slot) {
@@ -176,13 +195,31 @@ void Renderer::render(const Scene& scene, Camera& camera, FrameMetrics& metrics)
     if (lightCount > MAX_LIGHTS) lightCount = MAX_LIGHTS;
     metrics.activeLights = lightCount;
 
+    // M2: "point light dinamiche" (work_division.md §4) - torce che tremolano nel tempo,
+    // non solo luci puntuali statiche con attenuazione. Il flicker e' una somma di due seni
+    // a frequenze diverse (una lenta, una veloce, per un effetto meno meccanico di un seno
+    // solo) sfasata per indice di luce (il "+ seed"), cosi' le torce non pulsano tutte in
+    // sincrono. E' una funzione pura del tempo trascorso: a parita' di glfwGetTime() da
+    // origine, il risultato e' sempre lo stesso, quindi resta compatibile con un percorso di
+    // benchmark ripetibile (Andrea, M3) - non introduce nessuno stato/rand accumulato.
+    // Solo l'intensita' che mandiamo allo shader e' animata: scene.lights[i].intensity (il
+    // dato "vero", di Andrea) non viene mai toccato.
+    float t = (float)glfwGetTime();
+
     shader.setInt("numLights", lightCount);
     for (int i = 0; i < lightCount; ++i) {
         const Light& light = scene.lights[i];
         std::string idx = "[" + std::to_string(i) + "]";
+
+        float seed = (float)i * 12.9898f;   // arbitrary per-light phase offset
+        float flicker = 0.85f
+                       + 0.10f * sin(t * 6.0f  + seed)
+                       + 0.05f * sin(t * 17.0f + seed * 2.3f);
+        flicker = glm::clamp(flicker, 0.6f, 1.15f);   // never fully dark, never a huge spike
+
         shader.setVec3("lightPositions" + idx, light.position);
         shader.setVec3("lightColors" + idx, light.color);
-        shader.setFloat("lightIntensities" + idx, light.intensity);
+        shader.setFloat("lightIntensities" + idx, light.intensity * flicker);
         shader.setFloat("lightRadii" + idx, light.radius);
 
         // M2: tell the shader which shadow-map slot (if any) this light uses. Default
