@@ -24,18 +24,22 @@
 // pipeline test) are kept in the repo as a quick fallback/sanity check, but are not used
 // by default anymore.
 //
-// Not yet included here: shadow mapping and volumetric fog. Both will need rendering
-// into an off-screen framebuffer first; see render/framebuffer.h for that scaffolding.
+// M2: shadow mapping (PCF) for up to MAX_SHADOW_LIGHTS point lights (torches), following
+// the depth-pass + PCF-with-adaptive-bias approach from lecture07a (Davide Gadia), with
+// a perspective (instead of orthographic) light projection, since our lights are point
+// lights and not a directional one - see the long comment at the top of shaders/ggx.frag
+// for exactly what is/isn't taken verbatim from the professor's code. Volumetric fog is
+// still not included here; see render/framebuffer.h for that scaffolding.
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>   // glm::perspective
+#include <glm/gtc/matrix_transform.hpp>   // glm::perspective, glm::lookAt
 
 #include "engine/shader.h"
 #include "engine/camera.h"
 #include "core/scene.h"
 #include "core/metrics.h"
-#include "world/frustum_culling.h"   // Andrea's culling, now used inside the render loop
+#include "world/frustum_culling.h"   // Andrea's culling, used inside the render loop
 
 class Renderer {
 public:
@@ -44,46 +48,63 @@ public:
     bool cullingEnabled = true;
 
     // Must be >= the number of lights we ever pass to the shader in one draw call, and
-    // must match "#define MAX_LIGHTS 8" in shaders/ggx.frag. If Scene::lights ever grows
-    // past this (more torches than we can shade at once), render() below simply ignores
-    // the extra ones for now; proper light culling (picking only the closest lights per
-    // object) is a job for a later milestone, not for basic forward rendering.
-    static const int MAX_LIGHTS = 16;
+    // must match "#define MAX_LIGHTS 8" in shaders/ggx.frag.
+    static const int MAX_LIGHTS = 8;
 
-    // Loads and compiles the given vertex/fragment shader pair (paths are relative to
-    // the working directory the program is run from; see the comment next to the
-    // shaders copy step in CMakeLists.txt). main.cpp passes "shaders/ggx.vert" /
-    // "shaders/ggx.frag" by default.
+    // M2: how many torches can cast a shadow AT THE SAME TIME, and must match
+    // "#define MAX_SHADOW_LIGHTS 3" in shaders/ggx.vert and shaders/ggx.frag. Lorenzo's
+    // scene design is "one torch per wall except the corridor one", so 1 to 3 per room -
+    // this is the max across the whole game, not per room, so it should stay 3 unless a
+    // room design changes. If Scene::lights ever contains more than MAX_SHADOW_LIGHTS
+    // lights with castsShadow == true, render() below just takes the first
+    // MAX_SHADOW_LIGHTS and the rest fall back to unshadowed (see the comment in
+    // render()).
+    static const int MAX_SHADOW_LIGHTS = 3;
+
+    // Resolution of each shadow map (square). 1024 is the usual starting point for an
+    // indoor scene at this scale; if PCF edges look too blocky up close, or perf needs
+    // it to go down, this is the one number to tune.
+    static const int SHADOW_MAP_SIZE = 1024;
+
     Renderer(const char* vertexPath, const char* fragmentPath);
 
-    // Call this once at startup, and again every time the window is resized: it updates
-    // both the OpenGL viewport and the projection matrix (they must always match, or the
-    // image comes out stretched).
     void setViewport(int width, int height);
 
-    // Draws one whole frame: every RenderObject in "scene", from the point of view of
-    // "camera". Also writes drawCalls / trianglesDrawn into "metrics".
-    // "scene" is taken by const reference: the renderer only READS it, it never creates
-    // or removes meshes/objects (that is Andrea's side, in src/world/).
     void render(const Scene& scene, Camera& camera, FrameMetrics& metrics);
 
-    // Frees the GPU shader program. Call once, when the application closes.
     void clean();
 
 private:
     Shader shader;
     glm::mat4 projection;
-
-    // kept around so setViewport() can rebuild the projection matrix if we ever change
-    // the field of view at runtime (we do not yet, but it costs nothing to keep it here
-    // instead of hardcoding the same number twice)
     float fovDegrees;
 
+    int viewportWidth;
+    int viewportHeight;
+
+    // --- M2: shadow mapping state ---
+    // depth-only shader used for the shadow pass (shaders/shadowmap.vert/.frag).
+    Shader shadowShader;
+    // one FBO + one depth texture per potential shadow-casting torch.
+    GLuint shadowFBO[MAX_SHADOW_LIGHTS];
+    GLuint shadowMapTex[MAX_SHADOW_LIGHTS];
+
+    void initShadowMaps();
+
+    // Builds the light-space matrix (projection * view, from the light's point of view)
+    // for one shadow-casting torch. Perspective, not orthographic (see the comment in
+    // renderer.h above and in shaders/shadowmap.vert): a torch is a point light, its
+    // shadow map only needs to cover the cone it is aimed into (Light::direction), not
+    // the whole room in every direction (that would need a full cubemap, out of scope
+    // for M2 - see the discussion that led to this design).
+    glm::mat4 computeLightSpaceMatrix(const Light& light) const;
+
+    // Renders the whole scene, depth-only, into shadowFBO[slot] using shadowShader and
+    // the given light-space matrix. Called once per shadow-casting torch, before the
+    // main color pass.
+    void renderShadowPass(const Scene& scene, int slot, const glm::mat4& lightSpaceMatrix);
+
     // --- per-material look, until we have real textures ---
-    // These three all key off MaterialId (src/core/material.h) and are the GGX
-    // equivalent of the old colorForMaterial(): FLOOR/WALL/PROP each get a plausible
-    // flat albedo, roughness and Fresnel-at-0-degrees (F0) so they already look
-    // different from one another on screen.
     glm::vec3 albedoForMaterial(MaterialId material) const;
     float roughnessForMaterial(MaterialId material) const;
     glm::vec3 f0ForMaterial(MaterialId material) const;

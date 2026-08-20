@@ -139,12 +139,19 @@ inline void build(Scene& scene) {
 
     // --- lights ---
     // two warm "torches" floating above the floor, on opposite sides, so that both prop
-    // cubes clearly receive light from a direction we can visually check
+    // cubes clearly receive light from a direction we can visually check.
+    // M2: both are shadow-casters here (test_scene.h is Lorenzo's own sandbox, not the
+    // real dungeon - in the real rooms only up to MAX_SHADOW_LIGHTS torches per room will
+    // have castsShadow = true, see the comment in scene.h). Each is aimed roughly
+    // straight down at "its" prop cube, so you should see that cube's shadow fall on the
+    // floor - the simplest possible visual check that shadowPCF() in ggx.frag is working.
     Light torchA;
     torchA.position = { -2.0f, 2.0f, -1.5f };
     torchA.color = { 1.0f, 0.75f, 0.45f };
     torchA.intensity = 1.5f;
     torchA.radius = 8.0f;
+    torchA.castsShadow = true;
+    torchA.direction = glm::normalize(glm::vec3(0.0f, 0.5f, -1.5f) - torchA.position);
     scene.lights.push_back(torchA);
 
     Light torchB;
@@ -152,6 +159,8 @@ inline void build(Scene& scene) {
     torchB.color = { 1.0f, 0.75f, 0.45f };
     torchB.intensity = 1.5f;
     torchB.radius = 8.0f;
+    torchB.castsShadow = true;
+    torchB.direction = glm::normalize(glm::vec3(2.0f, 0.5f, 1.0f) - torchB.position);
     scene.lights.push_back(torchB);
 }
 
