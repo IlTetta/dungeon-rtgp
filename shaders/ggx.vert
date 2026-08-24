@@ -2,17 +2,18 @@
 //
 // Vertex shader for GGX (Cook-Torrance) forward shading.
 // It outputs, per fragment: the WORLD-space position and normal (the GGX BRDF in ggx.frag
-// needs the view/light directions there, and our lights/camera live in world space), the
-// texture coordinates for the albedo lookup, and - new in M2 - the vertex position in the
-// "light space" of every shadow-casting torch, so ggx.frag can do the depth comparison
-// against each shadow map.
+// needs the view/light directions there, and our lights/camera live in world space) and the
+// texture coordinates for the albedo lookup.
 //
-// The shadow part follows "posLightSpace" from 21_ggx_tex_shadow.vert (Davide Gadia,
-// lecture07a): "for the correct rendering of the shadows we need to calculate the vertex
-// coordinates also in light coordinates (= using the light as a camera)". Difference from
-// the professor's code: there it was a SINGLE directional light (one lightSpaceMatrix);
-// here we keep up to MAX_SHADOW_LIGHTS of them (an array), one per torch picked as a shadow
-// caster this frame (see Light::castsShadow in scene.h).
+// M2 shadow rework (Lorenzo, see M2_shadows_plan.md, problem #2/S2): the per-shadow-caster
+// "light space" position used to live here, computed per-vertex and interpolated. It now
+// lives in ggx.frag instead, computed per-FRAGMENT from FragPos/Normal with a normal-offset
+// (push the sampled point slightly along its own normal before projecting into light space).
+// Per-fragment is more correct (the interpolated per-vertex position vs. the true per-fragment
+// position drift apart on a stretched face, and the offset needs the real per-fragment
+// normal), and it lets one SPOT and one POINT/cubemap path share the same "give me a light
+// space depth" pattern without duplicating the projection math per shadow-caster in two
+// places. This vertex shader is otherwise the same as before.
 
 #version 410 core
 
@@ -28,17 +29,9 @@ uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
 
-// M2: one light-space matrix per torch that casts a shadow this frame.
-#define MAX_SHADOW_LIGHTS 3
-uniform mat4 lightSpaceMatrices[MAX_SHADOW_LIGHTS];
-uniform int  numShadowLights;   // how many of lightSpaceMatrices[] are actually in use
-
 out vec3 FragPos;
 out vec3 Normal;
 out vec2 TexCoords;
-
-// M2: the vertex position in each shadow caster's light space.
-out vec4 posLightSpace[MAX_SHADOW_LIGHTS];
 
 void main() {
     vec4 worldPos = model * vec4(aPos, 1.0);
@@ -53,16 +46,6 @@ void main() {
     Normal = normalize(normalMatrix * aNormal);
 
     TexCoords = aTexCoords;
-
-    // M2: project the same world position into each shadow light's space, so the fragment
-    // shader can compare depth against the matching shadow map ("posLightSpace =
-    // lightSpaceMatrix * mPosition" in the professor's code, repeated per torch).
-    for (int i = 0; i < MAX_SHADOW_LIGHTS; ++i) {
-        if (i < numShadowLights)
-            posLightSpace[i] = lightSpaceMatrices[i] * worldPos;
-        else
-            posLightSpace[i] = vec4(0.0);   // slot unused this frame
-    }
 
     gl_Position = projection * view * worldPos;
 }

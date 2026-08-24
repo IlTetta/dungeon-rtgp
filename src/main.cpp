@@ -234,8 +234,39 @@ int main() {
         ImGui::Text("Objects culled: %d", metrics.objectsCulled);
         ImGui::Text("Triangles     : %d", metrics.trianglesDrawn);
         ImGui::Text("Lights        : %d", metrics.activeLights);
+        // M2 (Lorenzo, M2_shadows_plan.md §4/§6): how many of the lights above got a REAL
+        // shadow this frame, and how many depth passes that cost (1 per SPOT, 6 per POINT
+        // cubemap) - the number to watch in the "#lights scaling" benchmark experiment.
+        ImGui::Text("Shadow lights : %d  (%d passes)", metrics.shadowLights, metrics.shadowPasses);
         ImGui::Separator();
         ImGui::Text("Frustum culling: %s", cullingEnabled ? "ON" : "OFF");
+
+        // M2 (Lorenzo): live shading/shadow tuning (Renderer::ShadingTuning, renderer.h) -
+        // move these until the dungeon looks right, then tell me the values so I can bake
+        // them in as the new defaults (see M2_shadows_plan.md).
+        ImGui::Separator();
+        if (ImGui::CollapsingHeader("Shadow tuning")) {
+            ImGui::SliderFloat("Ambient", &renderer.tuning.ambient, 0.0f, 0.5f);
+            ImGui::TextDisabled("SPOT (wall torches)");
+            ImGui::SliderFloat("Spot bias max", &renderer.tuning.spotBiasMax, 0.0f, 0.2f);
+            ImGui::SliderFloat("Spot bias min", &renderer.tuning.spotBiasMin, 0.0f, 0.05f);
+            ImGui::SliderFloat("Spot normal offset", &renderer.tuning.spotNormalOffset, 0.0f, 0.2f);
+            ImGui::TextDisabled("POINT (braziers, cubemap)");
+            ImGui::SliderFloat("Point bias scale", &renderer.tuning.pointBiasScale, 0.0f, 0.2f);
+            ImGui::SliderFloat("Point bias min scale", &renderer.tuning.pointBiasMinScale, 0.0f, 0.1f);
+            ImGui::SliderFloat("Point normal offset", &renderer.tuning.pointNormalOffset, 0.0f, 0.3f);
+            ImGui::SliderFloat("Point softness (S4)", &renderer.tuning.pointPCFRadius, 0.0f, 0.15f);
+            ImGui::TextDisabled("Pop-in fix (S3)");
+            ImGui::SliderFloat("Hysteresis margin", &renderer.tuning.shadowHysteresisMargin, 1.0f, 2.0f);
+            ImGui::SliderFloat("Fade seconds", &renderer.tuning.shadowFadeSeconds, 0.0f, 1.5f);
+            ImGui::TextDisabled("Contact shadows / SSAO (E1)");
+            ImGui::Checkbox("SSAO enabled", &renderer.tuning.ssaoEnabled);
+            ImGui::SliderFloat("SSAO radius", &renderer.tuning.ssaoRadius, 0.05f, 2.0f);
+            ImGui::SliderFloat("SSAO bias", &renderer.tuning.ssaoBias, 0.0f, 0.1f);
+            ImGui::SliderFloat("SSAO strength", &renderer.tuning.ssaoStrength, 0.5f, 4.0f);
+            if (ImGui::Button("Reset to defaults"))
+                renderer.tuning = Renderer::ShadingTuning();
+        }
 
         // --- M3 tools ---
         // (1) regenerate the dungeon from a seed, live. ImGui has no unsigned field, so we edit an
