@@ -1,9 +1,7 @@
 // fullscreen.vert
 //
-// Shared by every full-screen pass (M2: ssao.frag, ssaoblur.frag): draws a single triangle
-// pair covering the whole screen in NDC coordinates, so the fragment shader runs once per
-// pixel. aPos/aUV come from Renderer::initSSAO's small dedicated quad VAO (not the Mesh
-// class - a 2-triangle screen quad does not need position/normal/tangent/bitangent).
+// Shared by the SSAO passes: draws a full-screen quad in NDC so the fragment shader runs
+// once per pixel.
 
 #version 410 core
 

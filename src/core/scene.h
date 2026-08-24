@@ -43,13 +43,11 @@ struct RenderObject {
     int materialIndex = 0;
 };
 
-// M2 (locked decision, see M2_shadows_plan.md §2): a light is either a SPOT (aimed into a
-// single ~100 degree cone - a wall torch) or a POINT (true omnidirectional - a brazier).
-// Each needs a different kind of shadow map (SPOT: one 2D depth map; POINT: a depth cubemap,
-// 6 faces). Every real light placed today (dungeon_geometry.h, props.h) is a floor brazier,
-// so LIGHT_POINT is the default - nothing that already builds a Light needs to change.
+// A light is either a SPOT (aimed into a cone - a wall torch) or a POINT (omnidirectional -
+// a brazier); each needs a different shadow technique (2D map vs. cubemap). Every light
+// placed today is a floor brazier, so LIGHT_POINT is the default.
 enum LightType {
-    LIGHT_POINT,   // omnidirectional (braziers) - needs a cubemap shadow, no "direction"
+    LIGHT_POINT,   // omnidirectional (braziers) - cubemap shadow, no "direction"
     LIGHT_SPOT     // aimed cone (wall torches) - needs Light::direction
 };
 
@@ -60,21 +58,15 @@ struct Light {
     float intensity;
     float radius;    // distance after which the light contribution is ~0 (attenuation)
 
-    // M2 (Lorenzo, shadow mapping): does this light cast a shadow? Off by default, so any
-    // light nobody explicitly opts in behaves exactly as before - no shadow, always "fully
-    // lit". The renderer picks the Renderer::MAX_SHADOW_LIGHTS lights with this set to true
-    // that are closest to the camera each frame (see renderer.cpp), not just the first ones.
+    // does this light cast a shadow? Off by default. The renderer picks the
+    // MAX_SHADOW_LIGHTS lights with this set to true that are closest to the camera each
+    // frame, not just the first ones in the list.
     bool castsShadow = false;
 
-    // M2: SPOT or POINT - decides which shadow technique renderer.cpp uses for this light
-    // (cone vs cubemap) and whether "direction" below is meaningful. Defaults to POINT
-    // because every light placed today is a brazier.
     LightType type = LIGHT_POINT;
 
-    // M2: which way this light is "aimed" - only used (and only meaningful) for
-    // type == LIGHT_SPOT. Needs to be a normalized-ish, non-vertical direction (glm::lookAt
-    // degenerates if it is parallel to world-up); default points forward so an unset light
-    // never produces NaNs even if castsShadow ends up true by mistake.
+    // which way this light is "aimed" - only meaningful for type == LIGHT_SPOT. Must not be
+    // vertical (glm::lookAt degenerates if parallel to world-up); default points forward.
     glm::vec3 direction = glm::vec3(0.0f, 0.0f, 1.0f);
 };
 

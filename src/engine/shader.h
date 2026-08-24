@@ -6,9 +6,8 @@
 // before drawing.
 //
 // This is our own rewrite of the lab Shader class (which was based on LearnOpenGL).
-// Originally vertex + fragment only; M2 adds an optional geometry-shader overload (used by
-// the single-pass point-light cubemap shadow pass, shaders/pointshadow.geom) - see the
-// second constructor below. Nothing about the vertex+fragment path changes.
+// There's also an overload taking a geometry shader path (used by the point-light shadow
+// pass), see below.
 //
 // Difference from the lab version: this header includes glad by itself, so you do NOT
 // have to remember to include <glad/glad.h> before including this file.
@@ -67,12 +66,7 @@ public:
         glDeleteShader(fragment);
     }
 
-    // Overload with a geometry shader in the middle of the pipeline (vertex -> geometry ->
-    // fragment). Used for the single-pass point-light cubemap shadow pass (M2,
-    // shaders/pointshadow.geom): the geometry shader receives one triangle from the vertex
-    // shader and re-emits it 6 times, once per cube face (via gl_Layer), so one draw call
-    // covers a whole point light instead of 6 separate ones. Same 4 steps as the constructor
-    // above, just with a 3rd shader object compiled and attached before linking.
+    // Same idea, with a geometry shader in the middle (vertex -> geometry -> fragment).
     Shader(const char* vertexPath, const char* geometryPath, const char* fragmentPath) {
         std::string vertexCode = readFile(vertexPath);
         std::string geometryCode = readFile(geometryPath);

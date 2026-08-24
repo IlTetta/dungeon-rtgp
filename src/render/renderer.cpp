@@ -14,11 +14,8 @@ Renderer::Renderer(const char* vertexPath, const char* fragmentPath)
     : shader(vertexPath, fragmentPath),
       fovDegrees(60.0f),
       viewportWidth(1280), viewportHeight(720),
-      // M2: fixed paths, same convention as ggx.vert/.frag - there is only ever one shadow
-      // pipeline of each kind, no reason to make these configurable from main.cpp.
       shadowShader("shaders/shadowmap.vert", "shaders/shadowmap.frag"),
       pointShadowShader("shaders/pointshadow.vert", "shaders/pointshadow.geom", "shaders/pointshadow.frag"),
-      // E1: G-buffer + the two full-screen SSAO passes (see renderer.h for what each does).
       gBufferShader("shaders/gbuffer.vert", "shaders/gbuffer.frag"),
       ssaoShader("shaders/fullscreen.vert", "shaders/ssao.frag"),
       ssaoBlurShader("shaders/fullscreen.vert", "shaders/ssaoblur.frag")
@@ -32,8 +29,7 @@ Renderer::Renderer(const char* vertexPath, const char* fragmentPath)
 
 void Renderer::initShadowMaps() {
     // SPOT (cone) shadows: one FBO + one 2D depth texture per potential shadow-casting slot,
-    // created once at startup and reused every frame (we just re-render into them). Mirrors
-    // the FBO setup in lecture07a's SetupShadowMap(), repeated MAX_SHADOW_LIGHTS times.
+    // created once at startup and reused every frame.
     for (int i = 0; i < MAX_SHADOW_LIGHTS; ++i) {
         glGenFramebuffers(1, &shadowFBO[i]);
 
@@ -46,26 +42,24 @@ void Renderer::initShadowMaps() {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-        // white border: any point OUTSIDE the light's frustum samples the border and reads
-        // depth = 1.0 (the farthest possible), so it never looks "in shadow" just because it
-        // fell outside the torch's cone - same choice as lecture07a.
+        // white border: anything outside the light's frustum reads depth = 1.0 (farthest
+        // possible), so it never looks "in shadow" just for falling outside the torch's cone.
         float borderColor[] = { 1.0f, 1.0f, 1.0f, 1.0f };
         glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
 
         glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO[i]);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, shadowMapTex[i], 0);
-        // this FBO has no color attachment - we only want depth, like the professor's FBO.
-        glDrawBuffer(GL_NONE);
+        glDrawBuffer(GL_NONE);   // depth only, no color attachment
         glReadBuffer(GL_NONE);
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    // POINT (cubemap) shadows, single-pass (M2_shadows_plan.md, S1 "F2"): one shared DEPTH
-    // CUBEMAP (needs to be a texture, not a renderbuffer, to support layered attachment -
-    // see renderer.h), and one FBO + one 6-face color cubemap per slot, storing world-space
-    // distance as a single float per texel (see shaders/pointshadow.frag) rather than depth.
+    // POINT (cubemap) shadows, single-pass: one shared depth cubemap (needs to be a texture,
+    // not a renderbuffer, to support layered attachment), and one FBO + one 6-face color
+    // cubemap per slot, storing world-space distance as a single float per texel rather than
+    // raw depth.
     glGenTextures(1, &pointShadowDepthCubeTex);
     glBindTexture(GL_TEXTURE_CUBE_MAP, pointShadowDepthCubeTex);
     for (int face = 0; face < 6; ++face) {
@@ -87,17 +81,15 @@ void Renderer::initShadowMaps() {
         }
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        // cubemaps must clamp to edge (not border): there is no "outside" a cube, every
-        // direction hits some face.
+        // cubemaps clamp to edge, not border: there is no "outside" a cube.
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
         glGenFramebuffers(1, &shadowCubeFBO[i]);
         glBindFramebuffer(GL_FRAMEBUFFER, shadowCubeFBO[i]);
-        // glFramebufferTexture (NOT ...Texture2D) attaches all 6 faces at once as a LAYERED
-        // target: the geometry shader picks the face per emitted triangle via gl_Layer,
-        // instead of us re-binding one face at a time across 6 separate draw calls.
+        // glFramebufferTexture (not ...Texture2D) attaches all 6 faces at once as a layered
+        // target - the geometry shader picks the face per emitted triangle via gl_Layer.
         glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, shadowCubeTex[i], 0);
         glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, pointShadowDepthCubeTex, 0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -106,20 +98,17 @@ void Renderer::initShadowMaps() {
 }
 
 glm::mat4 Renderer::computeLightSpaceMatrix(const Light& light) const {
-    // Perspective, not orthographic (see renderer.h / shaders/shadowmap.vert): a torch's
-    // shadow only needs to cover the cone it is aimed into.
-    // FOV: wide enough that a wall-mounted torch still covers most of a typical room without
-    // pixel-perfect aiming - 100 degrees is a reasonable indoor cone. near/far follow the
-    // light's own radius (its attenuation "range" in ggx.frag too), so shadow-map depth
-    // precision and light attenuation stay consistent with each other.
+    // Perspective, not orthographic: a torch's shadow only needs to cover the cone it is
+    // aimed into. 100 degrees is a reasonable indoor cone for a wall-mounted torch; near/far
+    // follow the light's own attenuation radius, so shadow-map precision and light
+    // attenuation stay consistent with each other.
     float nearPlane = 0.05f;
     float farPlane = (light.radius > nearPlane) ? light.radius : (nearPlane + 1.0f);
 
     glm::mat4 lightProjection = glm::perspective(glm::radians(100.0f), 1.0f, nearPlane, farPlane);
 
-    // "up" for lookAt() cannot be parallel to the look direction, or the matrix degenerates.
-    // Torches are normally aimed roughly horizontally (into the room), so world-up (0,1,0) is
-    // safe; a torch aimed straight up/down would need a fallback, which we do not expect.
+    // "up" for lookAt() cannot be parallel to the look direction. Torches are aimed roughly
+    // horizontally, so world-up is safe; a torch aimed straight up/down would need a fallback.
     glm::vec3 dir = glm::normalize(light.direction);
     glm::mat4 lightView = glm::lookAt(light.position, light.position + dir, glm::vec3(0.0f, 1.0f, 0.0f));
 
@@ -131,22 +120,19 @@ void Renderer::renderShadowPass(const Scene& scene, int slot, const glm::mat4& l
     glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO[slot]);
     glClear(GL_DEPTH_BUFFER_BIT);
 
-    // M2_shadows_plan.md, problem #2/S2: cull FRONT faces during the depth pass (draw only
-    // back faces), so the depth recorded for a light-facing surface is the far side of the
-    // geometry it belongs to, not the near side - pushes self-shadowing acne behind the
-    // surface instead of on top of it. Safe here because every current mesh (dungeon boxes,
-    // OBJ props) is closed/solid, so back faces still fully cover what front faces would.
+    // Cull FRONT faces during the depth pass (draw only back faces): the recorded depth ends
+    // up on the far side of the geometry instead of the near side, which pushes self-
+    // shadowing acne behind the surface instead of on top of it. Safe here because every
+    // current mesh (dungeon boxes, OBJ props) is closed/solid.
     glEnable(GL_CULL_FACE);
     glCullFace(GL_FRONT);
 
     shadowShader.use();
     shadowShader.setMat4("lightSpaceMatrix", lightSpaceMatrix);
 
-    // depth-only, but still cull against THIS light's own frustum (not the player's): an
-    // object outside the torch's 100-degree cone cannot occlude anything inside it either,
-    // so skipping it is free correctness, not an approximation. This was the main cost behind
-    // the low framerate once several shadow-casters were active at once - see the perf note
-    // on renderPointShadowPass() below, where it matters even more.
+    // Still cull against this light's own frustum (not the player's): an object outside the
+    // torch's cone cannot occlude anything inside it either, so skipping it is free
+    // correctness. This is also the main perf win once several shadow-casters are active.
     Frustum lightFrustum = extractFrustum(lightSpaceMatrix);
     for (const RenderObject& obj : scene.objects) {
         if (!isAABBVisible(lightFrustum, obj.worldBounds))
@@ -155,25 +141,21 @@ void Renderer::renderShadowPass(const Scene& scene, int slot, const glm::mat4& l
         const Mesh& mesh = scene.meshes[obj.meshIndex];
         mesh.draw();
     }
-    // NOTE: we do NOT count these draw calls in FrameMetrics::drawCalls - that field
-    // describes the main color pass (what the HUD/benchmark cares about, see metrics.h);
-    // the shadow pass cost shows up in frameTimeMs instead, same as in a real frame budget.
+    // not counted in FrameMetrics::drawCalls (that field describes the color pass) - the cost
+    // shows up in frameTimeMs instead.
 
-    glDisable(GL_CULL_FACE);   // the color pass does not cull (see test_scene.h's M1 note)
+    glDisable(GL_CULL_FACE);   // the color pass does not cull
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void Renderer::computePointShadowMatrices(const Light& light, glm::mat4 outFaces[6]) const {
-    // Standard 6-face point-light setup: a 90-degree FOV perspective (exactly covers one
-    // face of a cube) aimed down each of +-X/+-Y/+-Z from the light's own position, in the
-    // GL_TEXTURE_CUBE_MAP_POSITIVE_X.. face order. near/far follow the light's radius, same
-    // reasoning as computeLightSpaceMatrix() for SPOT lights.
+    // 90-degree FOV perspective (exactly covers one cube face) aimed down each of
+    // +-X/+-Y/+-Z from the light's position, in GL_TEXTURE_CUBE_MAP_POSITIVE_X.. face order.
     float nearPlane = 0.05f;
     float farPlane = (light.radius > nearPlane) ? light.radius : (nearPlane + 1.0f);
     glm::mat4 proj = glm::perspective(glm::radians(90.0f), 1.0f, nearPlane, farPlane);
 
     const glm::vec3& p = light.position;
-    // GL_TEXTURE_CUBE_MAP_POSITIVE_X, NEGATIVE_X, POSITIVE_Y, NEGATIVE_Y, POSITIVE_Z, NEGATIVE_Z
     outFaces[0] = proj * glm::lookAt(p, p + glm::vec3( 1, 0, 0), glm::vec3(0, -1, 0));
     outFaces[1] = proj * glm::lookAt(p, p + glm::vec3(-1, 0, 0), glm::vec3(0, -1, 0));
     outFaces[2] = proj * glm::lookAt(p, p + glm::vec3(0,  1, 0), glm::vec3(0, 0,  1));
@@ -182,14 +164,11 @@ void Renderer::computePointShadowMatrices(const Light& light, glm::mat4 outFaces
     outFaces[5] = proj * glm::lookAt(p, p + glm::vec3(0, 0, -1), glm::vec3(0, -1, 0));
 }
 
-// A single draw call's geometry-shader output now covers all 6 faces at once, so we can no
-// longer cull per-face like the old 6-pass version did (a triangle might only matter to one
-// face, but the CPU has to decide per-OBJECT before the single draw call even starts). The
-// honest trade-off of going single-pass: fewer draw calls and one CPU-side scene traversal
-// instead of 6, but coarser culling and 6x geometry-shader amplification on the GPU. This is
-// the cheapest correct stand-in for "per-face" culling: skip an object if its AABB cannot
-// possibly be seen from ANY face, i.e. it does not overlap a sphere of the light's own
-// falloff radius around its position (objects past that distance contribute ~0 light anyway).
+// One draw call's geometry-shader output now covers all 6 faces at once, so per-face culling
+// (like the SPOT pass does) isn't possible here - the CPU has to decide per object before the
+// single draw call starts. Cheapest correct stand-in: skip an object if its AABB doesn't
+// overlap a sphere of the light's own falloff radius (past that distance it contributes ~0
+// light anyway).
 static bool aabbIntersectsSphere(const AABB& box, const glm::vec3& center, float radius) {
     glm::vec3 closest = glm::clamp(center, box.min, box.max);
     glm::vec3 d = closest - center;
@@ -205,15 +184,15 @@ void Renderer::renderPointShadowPass(const Scene& scene, int slot, const Light& 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);   // clears all 6 layers at once
 
     glEnable(GL_CULL_FACE);
-    glCullFace(GL_FRONT);   // same acne fix as the SPOT pass, see renderShadowPass()
+    glCullFace(GL_FRONT);   // same acne fix as the SPOT pass
 
     pointShadowShader.use();
     pointShadowShader.setVec3("lightPos", light.position);
     for (int face = 0; face < 6; ++face)
         pointShadowShader.setMat4("lightSpaceMatrices[" + std::to_string(face) + "]", faces[face]);
 
-    // ONE draw call per object (not 6): the geometry shader fans each triangle out to every
-    // face that needs it.
+    // one draw call per object (not 6) - the geometry shader fans each triangle out to every
+    // face that needs it
     for (const RenderObject& obj : scene.objects) {
         if (!aabbIntersectsSphere(obj.worldBounds, light.position, light.radius))
             continue;
@@ -221,21 +200,17 @@ void Renderer::renderPointShadowPass(const Scene& scene, int slot, const Light& 
         const Mesh& mesh = scene.meshes[obj.meshIndex];
         mesh.draw();
     }
-    // NOTE: same as renderShadowPass() - these draw calls are not counted in
-    // FrameMetrics::drawCalls, but DO count in FrameMetrics::shadowPasses (see
-    // renderInternal()): still reported as 6 "face-equivalents" per point-shadow-caster, for
-    // an apples-to-apples GPU cost comparison against the earlier 6-pass version in the
-    // "#lights scaling" benchmark experiment, even though it is now 1 real draw call.
+    // reported as 6 "face-equivalents" in FrameMetrics::shadowPasses for a consistent GPU
+    // cost comparison, even though it's now 1 real draw call.
 
     glDisable(GL_CULL_FACE);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void Renderer::initSSAO() {
-    // The full-screen quad both SSAO passes draw: 2 triangles in NDC space, position + UV
-    // interleaved. Not a Mesh (engine/mesh.h) on purpose - that class carries 5 vertex
-    // attributes meant for real 3D geometry, this is 2 floats + 2 floats for a fixed shape
-    // that never changes, a dedicated tiny VAO/VBO is simpler than forcing it through Mesh.
+    // Full-screen quad both SSAO passes draw: 2 triangles in NDC, position + UV interleaved.
+    // Not a Mesh - that class carries attributes meant for real 3D geometry, this is a fixed
+    // shape that never changes.
     float quadVertices[] = {
         // pos         // uv
         -1.0f,  1.0f,  0.0f, 1.0f,
@@ -256,12 +231,9 @@ void Renderer::initSSAO() {
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
     glBindVertexArray(0);
 
-    // Hemisphere sample kernel (LearnOpenGL's SSAO technique): 32 vectors in tangent space,
-    // z >= 0 (a hemisphere, not a full sphere - samples only ever point "outward" from the
-    // surface), scattered more densely near the origin (lerp(0.1, 1.0, t*t)) so nearby
-    // occluders matter more than distant ones. Computed once here, not per frame - it is the
-    // same 32 vectors every time, only their ORIENTATION (via the noise texture, per pixel)
-    // changes at runtime.
+    // Hemisphere sample kernel: 32 vectors in tangent space, z >= 0, scattered more densely
+    // near the origin so nearby occluders matter more than distant ones. Fixed once here -
+    // only their orientation (via the noise texture, per pixel) changes at runtime.
     std::uniform_real_distribution<float> randZeroOne(0.0f, 1.0f);
     std::default_random_engine gen;
     for (int i = 0; i < 32; ++i) {
@@ -275,10 +247,9 @@ void Renderer::initSSAO() {
         ssaoKernel[i] = sample * scale;
     }
 
-    // 4x4 tile of random rotation vectors (z = 0, we only need a rotation AROUND the normal,
-    // not a 3D direction) - texture-repeated across the screen in ssao.frag so every pixel's
-    // kernel is rotated a little differently, turning what would otherwise be banding
-    // artifacts into noise (which the blur pass then removes).
+    // 4x4 tile of random rotation vectors (z = 0: a rotation around the normal, not a full 3D
+    // direction), tiled across the screen so every pixel's kernel is rotated a bit
+    // differently - turns banding into noise, which the blur pass then removes.
     glm::vec3 ssaoNoise[16];
     for (int i = 0; i < 16; ++i)
         ssaoNoise[i] = glm::vec3(randZeroOne(gen) * 2.0f - 1.0f, randZeroOne(gen) * 2.0f - 1.0f, 0.0f);
@@ -296,10 +267,9 @@ void Renderer::initSSAO() {
 }
 
 void Renderer::resizeSSAO(int width, int height) {
-    if (width == ssaoWidth && height == ssaoHeight) return;   // nothing to do
+    if (width == ssaoWidth && height == ssaoHeight) return;
 
-    // free whatever we already had (resizeSSAO can run again later, e.g. a window resize)
-    if (gBufferFBO) {
+    if (gBufferFBO) {   // free whatever we already had, if this runs again (e.g. window resize)
         glDeleteFramebuffers(1, &gBufferFBO);
         glDeleteTextures(1, &gPositionTex);
         glDeleteTextures(1, &gNormalTex);
@@ -312,8 +282,8 @@ void Renderer::resizeSSAO(int width, int height) {
     ssaoWidth = width;
     ssaoHeight = height;
 
-    // --- G-buffer: view-space position + normal, floating point (they are NOT colors, a
-    // normal or a position component is routinely outside [0,1] or negative) ---
+    // G-buffer: view-space position + normal, floating point (not colors - components are
+    // routinely outside [0,1] or negative).
     glGenFramebuffers(1, &gBufferFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, gBufferFBO);
 
@@ -341,7 +311,7 @@ void Renderer::resizeSSAO(int width, int height) {
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // --- raw (noisy) AO term: single channel is enough, it is just a 0..1 factor ---
+    // raw (noisy) AO term: single channel is enough, it's just a 0..1 factor
     glGenFramebuffers(1, &ssaoFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, ssaoFBO);
     glGenTextures(1, &ssaoColorTex);
@@ -352,7 +322,7 @@ void Renderer::resizeSSAO(int width, int height) {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ssaoColorTex, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // --- blurred AO term: what ggx.frag actually samples ---
+    // blurred AO term: what ggx.frag actually samples
     glGenFramebuffers(1, &ssaoBlurFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, ssaoBlurFBO);
     glGenTextures(1, &ssaoBlurColorTex);
@@ -365,7 +335,7 @@ void Renderer::resizeSSAO(int width, int height) {
 }
 
 void Renderer::renderSSAO(const Scene& scene, const glm::mat4& view, const Frustum& cullFrustum) {
-    // --- pass 1: G-buffer (view-space position + normal of the closest surface) ---
+    // pass 1: G-buffer (view-space position + normal of the closest surface)
     glBindFramebuffer(GL_FRAMEBUFFER, gBufferFBO);
     glViewport(0, 0, ssaoWidth, ssaoHeight);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -380,7 +350,7 @@ void Renderer::renderSSAO(const Scene& scene, const glm::mat4& view, const Frust
         scene.meshes[obj.meshIndex].draw();
     }
 
-    // --- pass 2: raw AO, from the G-buffer, onto the full-screen quad ---
+    // pass 2: raw AO, from the G-buffer, onto the full-screen quad
     glBindFramebuffer(GL_FRAMEBUFFER, ssaoFBO);
     glClear(GL_COLOR_BUFFER_BIT);
     ssaoShader.use();
@@ -403,7 +373,7 @@ void Renderer::renderSSAO(const Scene& scene, const glm::mat4& view, const Frust
     glBindVertexArray(quadVAO);
     glDrawArrays(GL_TRIANGLES, 0, 6);
 
-    // --- pass 3: blur, to remove the per-pixel noise the random rotation above introduces ---
+    // pass 3: blur, to remove the per-pixel noise the random rotation above introduces
     glBindFramebuffer(GL_FRAMEBUFFER, ssaoBlurFBO);
     glClear(GL_COLOR_BUFFER_BIT);
     ssaoBlurShader.use();
@@ -426,57 +396,47 @@ void Renderer::setViewport(int width, int height) {
     // guard against a division by zero if the window is minimized (height becomes 0)
     float aspect = (height > 0) ? (float)width / (float)height : 1.0f;
 
-    // perspective(fov, aspect, near, far). far plane at 500: the dungeon can be ~130 units
-    // across on the diagonal, so a nearer far plane (e.g. 100) would clip distant geometry.
+    // far plane at 500: the dungeon can be ~130 units across on the diagonal, so a nearer far
+    // plane (e.g. 100) would clip distant geometry.
     projection = glm::perspective(glm::radians(fovDegrees), aspect, 0.1f, 500.0f);
 
-    // E1: the G-buffer/SSAO textures must be exactly screen-sized (unlike the shadow maps,
-    // which have their own fixed resolution) - keep them in sync whenever this changes.
+    // the G-buffer/SSAO textures must be exactly screen-sized (unlike the shadow maps).
     if (width > 0 && height > 0)
         resizeSSAO(width, height);
 }
 
 void Renderer::render(const Scene& scene, Camera& camera, FrameMetrics& metrics) {
-    // Normal (player) path: we DRAW from the camera and CULL against that same camera's
-    // frustum, built here from this frame's view-projection (Andrea's Gribb-Hartmann
-    // extraction, in world/frustum_culling.h).
+    // Normal (player) path: draw from the camera and cull against that same camera's
+    // frustum, built here from this frame's view-projection.
     Frustum frustum = extractFrustum(projection * camera.getViewMatrix());
     renderInternal(scene, camera.getViewMatrix(), camera.Position, frustum, /*hideCeiling*/false, metrics);
 }
 
 void Renderer::renderSpectator(const Scene& scene, const glm::mat4& view, const glm::vec3& eye,
                                const Frustum& cullFrustum, bool hideCeiling, FrameMetrics& metrics) {
-    // Debug path: DRAW from `view`/`eye` (the far spectator camera) but CULL against the
+    // Debug path: draw from `view`/`eye` (the far spectator camera) but cull against the
     // frozen `cullFrustum` we were handed (the player's). Same drawing core as render().
     renderInternal(scene, view, eye, cullFrustum, hideCeiling, metrics);
 }
 
 void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const glm::vec3& eye,
                               const Frustum& cullFrustum, bool hideCeiling, FrameMetrics& metrics) {
-    // reset the counters: they describe THIS frame only. Since the culling happens here, the
-    // Renderer is the single writer for all of these object/draw counters.
     metrics.drawCalls = 0;
     metrics.trianglesDrawn = 0;
     metrics.objectsTotal = (int)scene.objects.size();
 
-    // --- M2, step 0: pick which torches cast a shadow this frame, and render their depth
-    // maps BEFORE the color pass (the color pass samples them). ---
-    // The number of castsShadow torches is meant to vary a lot (Andrea's placement is a
-    // tunable count), while MAX_SHADOW_LIGHTS is a fixed perf budget - so every frame we pick
-    // the MAX_SHADOW_LIGHTS shadow-casting lights CLOSEST to `eye`, not "the first ones in
-    // Scene::lights". This way real shadows follow the player from room to room. lecture07a
-    // only handles a single light ("For more lights ... the shader must be modified to
-    // consider each case"): nearest-to-camera selection is the standard way a real engine
-    // extends single-shadow-map code to many dynamic lights. A light that doesn't make the
-    // cut this frame simply falls back to unshadowed (same as castsShadow == false).
+    // Pick which torches cast a shadow this frame, and render their depth maps before the
+    // color pass. The number of castsShadow torches can vary a lot while MAX_SHADOW_LIGHTS is
+    // a fixed perf budget, so every frame we pick the ones closest to `eye`, not just the
+    // first ones in Scene::lights - this way real shadows follow the player from room to
+    // room. A light that doesn't make the cut simply falls back to unshadowed.
     int shadowLightIndex[MAX_SHADOW_LIGHTS];    // -> index into scene.lights
     bool shadowIsPoint[MAX_SHADOW_LIGHTS];       // Light::type of that slot's light, this frame
     glm::mat4 lightSpaceMatrices[MAX_SHADOW_LIGHTS];   // SPOT slots only
     int numShadowLights = 0;
 
-    // S3 (M2_shadows_plan.md, problem #3 "pop-in"): keep shadowWeight in sync with the scene -
-    // a dungeon regenerate can change how many lights exist, in which case there is no "old"
-    // fade to continue, starting every light at 0 is correct.
+    // keep shadowWeight in sync with the scene - a dungeon regenerate can change how many
+    // lights exist, in which case there's no "old" fade to continue, starting at 0 is correct.
     if (shadowWeight.size() != scene.lights.size())
         shadowWeight.assign(scene.lights.size(), 0.0f);
 
@@ -494,13 +454,12 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         return glm::dot(da, da) < glm::dot(db, db);   // squared distance: avoids sqrt() calls
     });
 
-    // S3: the strict nearest-K would be `shadowCandidates[0..MAX_SHADOW_LIGHTS)`, but that
-    // flickers a light on/off every frame right at the boundary as the player moves. Instead:
-    // start from the strict nearest-K ("chosen"), then let an ALREADY-ACTIVE light
-    // (shadowWeight > 0) keep its slot even if something else has technically edged closer,
-    // as long as it is still within shadowHysteresisMargin of the cutoff - evicting the
-    // farthest slot in `chosen` that isn't itself a retained light, so the slot count never
-    // grows past MAX_SHADOW_LIGHTS.
+    // The strict nearest-K would flicker a light on/off every frame right at the boundary as
+    // the player moves. Instead: start from the strict nearest-K ("chosen"), then let an
+    // already-active light (shadowWeight > 0) keep its slot even if something else has
+    // technically edged closer, as long as it's still within shadowHysteresisMargin of the
+    // cutoff - evicting the farthest slot that isn't itself a retained light, so the slot
+    // count never grows past MAX_SHADOW_LIGHTS.
     std::vector<int> chosen(shadowCandidates.begin(),
         shadowCandidates.begin() + std::min((size_t)MAX_SHADOW_LIGHTS, shadowCandidates.size()));
 
@@ -536,9 +495,8 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         numShadowLights++;
     }
 
-    // S3: ramp shadowWeight toward 1 for every light that has a slot this frame, toward 0 for
-    // every other castsShadow light (including ones that just lost their slot above, or were
-    // evicted as a hysteresis victim) - this turns "gained/lost a slot" into a fade over
+    // ramp shadowWeight toward 1 for every light with a slot this frame, toward 0 for every
+    // other castsShadow light - turns "gained/lost a slot" into a fade over
     // shadowFadeSeconds instead of an instant pop.
     float fadeStep = (tuning.shadowFadeSeconds > 0.0f) ? (dt / tuning.shadowFadeSeconds) : 1.0f;
     for (int idx : shadowCandidates) {
@@ -551,9 +509,7 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
             shadowWeight[idx] = std::max(target, shadowWeight[idx] - fadeStep);
     }
 
-    // M2 (metrics.h, shadowLights/shadowPasses): a SPOT slot costs 1 depth pass, a POINT slot
-    // costs 6 (one per cubemap face) - this is the real per-frame GPU cost the "#lights
-    // scaling" benchmark experiment needs.
+    // a SPOT slot costs 1 depth pass, a POINT slot costs 6 (one per cubemap face)
     metrics.shadowLights = numShadowLights;
     metrics.shadowPasses = 0;
     for (int slot = 0; slot < numShadowLights; ++slot) {
@@ -569,18 +525,13 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     // restore the real viewport (the shadow passes above switched it to a shadow-map size)
     glViewport(0, 0, viewportWidth, viewportHeight);
 
-    // E1: SSAO's own 3-pass pipeline (G-buffer -> raw AO -> blur), from the SAME camera the
-    // color pass below is about to draw from - has to run before it, the color pass samples
-    // its result. Always runs (even with tuning.ssaoEnabled off) so ssaoBlurColorTex is never
-    // stale garbage from an earlier frame; ssaoEnabled itself only gates whether ggx.frag
-    // actually multiplies by it (see the ssaoOn uniform below) - simpler and more correct
-    // than trying to skip the pass and hand the shader a substitute "flat 1.0" texture.
+    // SSAO's own 3-pass pipeline runs from the same camera the color pass is about to draw
+    // from, before it (the color pass samples its result). Always runs, even with
+    // tuning.ssaoEnabled off, so the blurred texture is never stale - ssaoEnabled just gates
+    // whether ggx.frag actually multiplies by it.
     renderSSAO(scene, view, cullFrustum);
 
     // --- 1. clear the screen ---
-    // we clear both the color buffer (last frame's picture) and the depth buffer (last
-    // frame's per-pixel closest distance); forgetting the depth buffer would make the depth
-    // test compare against stale values.
     glClearColor(0.05f, 0.05f, 0.08f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -590,8 +541,6 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     shader.setMat4("projection", projection);
     shader.setVec3("viewPos", eye);   // ggx.frag needs this to build V
 
-    // M2: live-tunable shading/shadow constants (see ShadingTuning in renderer.h) - sent every
-    // frame so main.cpp's ImGui panel can drive them without a rebuild.
     shader.setFloat("ambient", tuning.ambient);
     shader.setFloat("spotBiasMax", tuning.spotBiasMax);
     shader.setFloat("spotBiasMin", tuning.spotBiasMin);
@@ -601,14 +550,13 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     shader.setFloat("pointNormalOffset", tuning.pointNormalOffset);
     shader.setFloat("pointPCFRadius", tuning.pointPCFRadius);
 
-    // M2 (M2_shadows_plan.md, problem #7/L1): which lights actually get a uniform slot and
-    // shade the scene at all - up to MAX_LIGHTS, nearest to `eye` first, NOT just "the first
-    // MAX_LIGHTS in Scene::lights". With more lights in the dungeon than MAX_LIGHTS, a light
-    // that doesn't even get a slot contributes literally nothing (unlike one that just has no
-    // shadow, which is still lit) - that is what made corridors/far rooms go dark. The
-    // MAX_SHADOW_LIGHTS shadow-casters chosen above are placed FIRST in this list on purpose
-    // (a shadow-casting light that were not shaded would be pointless), everything else after
-    // them is filled with the nearest remaining lights.
+    // Which lights actually get a uniform slot and shade the scene at all - up to MAX_LIGHTS,
+    // nearest to `eye` first, not just the first ones in Scene::lights. A light that doesn't
+    // get a slot contributes nothing at all (unlike one that just has no shadow), which is
+    // what made corridors/far rooms go dark with more lights than MAX_LIGHTS. The shadow-
+    // casters chosen above are placed first in this list on purpose - a shadow-casting light
+    // that wasn't shaded would be pointless - everything else is filled with the nearest
+    // remaining lights.
     std::vector<int> shadeCandidates;
     shadeCandidates.reserve(scene.lights.size());
     for (size_t i = 0; i < scene.lights.size(); ++i) shadeCandidates.push_back((int)i);
@@ -631,15 +579,11 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     }
     metrics.activeLights = lightCount;
 
-    // M2 "dynamic point lights" (work_division.md §4): torches flicker over time instead of
-    // being static point lights. The flicker is a sum of two sines at different frequencies
-    // (one slow, one fast, for a less mechanical look than a single sine) phase-shifted per
-    // light index (the "+ seed"), so torches do not pulse in sync. It is a PURE function of
-    // elapsed time: same glfwGetTime() => same result, so it stays compatible with a
-    // repeatable benchmark path (Andrea, M3) - no accumulated state / rand. Only the
-    // intensity we SEND to the shader is animated: scene.lights[i].intensity (Andrea's real
-    // data) is never modified. Reuses `now` from the S3 fade timer above - same instant, no
-    // reason to call glfwGetTime() twice.
+    // Torches flicker over time instead of being static: a sum of two sines at different
+    // frequencies (less mechanical than one), phase-shifted per light index so they don't
+    // pulse in sync. A pure function of elapsed time, so it stays repeatable for a benchmark
+    // run; only the intensity SENT to the shader is animated, scene.lights[i].intensity
+    // itself is never modified. Reuses `now` from the fade timer above.
     float t = now;
 
     shader.setInt("numLights", lightCount);
@@ -658,15 +602,11 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         shader.setFloat("lightIntensities" + idx, light.intensity * flicker);
         shader.setFloat("lightRadii" + idx, light.radius);
 
-        // Because the shadow-casters were placed FIRST in shadeLightIndex above, the i-th
-        // shaded light IS shadow slot i whenever i < numShadowLights - no separate lookup
-        // needed, and no light can ever have a shadow without also being shaded.
+        // shadow-casters are placed first in shadeLightIndex above, so the i-th shaded light
+        // IS shadow slot i whenever i < numShadowLights - no lookup needed.
         bool hasShadow = (i < numShadowLights);
         shader.setInt("lightShadowSlot" + idx, hasShadow ? i : -1);
         shader.setInt("lightShadowIsPoint" + idx, (hasShadow && shadowIsPoint[i]) ? 1 : 0);
-        // S3: how much of this light's shadow to actually apply this frame (see the fade
-        // loop above) - 0 right when a light is first promoted into a slot, ramping to 1 over
-        // shadowFadeSeconds, so a shadow appears gradually instead of snapping on.
         shader.setFloat("lightShadowWeight" + idx, hasShadow ? shadowWeight[shadeLightIndex[i]] : 0.0f);
     }
 
@@ -675,11 +615,9 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         if (slot < numShadowLights && !shadowIsPoint[slot])
             shader.setMat4("lightSpaceMatrices" + idx, lightSpaceMatrices[slot]);
 
-        // Both kinds of shadow map live on their own fixed texture units regardless of
-        // whether this slot is in use this frame (unused ones just are not sampled, since
-        // ggx.frag only reads shadowMaps[]/pointShadowMaps[] when lightShadowSlot[i] >= 0) -
-        // the sampler uniform still needs a valid, distinct unit either way. SPOT maps take
-        // units 0..MAX_SHADOW_LIGHTS-1, POINT cubemaps the next MAX_SHADOW_LIGHTS after that.
+        // both kinds of shadow map live on their own fixed texture units regardless of
+        // whether this slot is used this frame (unused ones just aren't sampled). SPOT maps
+        // take units 0..MAX_SHADOW_LIGHTS-1, POINT cubemaps the next MAX_SHADOW_LIGHTS after.
         glActiveTexture(GL_TEXTURE0 + slot);
         glBindTexture(GL_TEXTURE_2D, shadowMapTex[slot]);
         shader.setInt("shadowMaps" + idx, slot);
@@ -690,12 +628,11 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         shader.setInt("pointShadowMaps" + idx, cubeUnit);
     }
 
-    // the per-object albedo texture goes on the unit right after both shadow-map arrays, so
-    // it never clashes with them (all are sampled in the same draw).
+    // per-object albedo texture goes on the unit right after both shadow-map arrays
     const int ALBEDO_UNIT = 2 * MAX_SHADOW_LIGHTS;   // = 8
     shader.setInt("albedoMap", ALBEDO_UNIT);
 
-    // E1: the finished (blurred) SSAO term, one unit further along.
+    // blurred SSAO term, one unit further along
     const int SSAO_UNIT = ALBEDO_UNIT + 1;   // = 9
     glActiveTexture(GL_TEXTURE0 + SSAO_UNIT);
     glBindTexture(GL_TEXTURE_2D, ssaoBlurColorTex);
@@ -703,10 +640,7 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     shader.setVec2("screenSize", glm::vec2((float)viewportWidth, (float)viewportHeight));
     shader.setInt("ssaoOn", tuning.ssaoEnabled ? 1 : 0);
 
-    // --- 3. frustum culling: we cull against the passed-in cullFrustum (the player's, even
-    // when we draw from the spectator camera). ---
-
-    // --- 4. one draw call per VISIBLE object in the scene ---
+    // --- 3. one draw call per VISIBLE object in the scene, culled against cullFrustum ---
     for (const RenderObject& obj : scene.objects) {
         // debug overhead view: drop the ceiling slabs, otherwise a top-down camera only sees
         // the closed roof and never the rooms below.
@@ -718,7 +652,6 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
 
         shader.setMat4("model", obj.modelMatrix);
 
-        // look up this object's material and bind its albedo texture to the albedo unit
         const Material& mat = scene.materials[obj.materialIndex];
         glActiveTexture(GL_TEXTURE0 + ALBEDO_UNIT);
         glBindTexture(GL_TEXTURE_2D, mat.albedo);
@@ -733,7 +666,6 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         metrics.trianglesDrawn += (int)(mesh.indices.size() / 3);
     }
 
-    // whatever we did not draw was culled
     metrics.objectsCulled = metrics.objectsTotal - metrics.drawCalls;
 }
 

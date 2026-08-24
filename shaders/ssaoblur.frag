@@ -1,9 +1,7 @@
 // ssaoblur.frag
 //
-// M2 (Lorenzo, E1): ssao.frag's per-pixel random rotation (see its header) leaves visible
-// noise - a simple 4x4 box blur over the raw AO texture cleans it up into the soft, even
-// darkening SSAO is supposed to look like. Small and fixed on purpose (a full bilateral/edge-
-// aware blur is more work for a difference that is hard to see at this project's scale).
+// ssao.frag's per-pixel random rotation leaves visible noise - a simple 4x4 box blur cleans
+// it up into the soft, even darkening SSAO is supposed to look like.
 
 #version 410 core
 

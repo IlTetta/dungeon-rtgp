@@ -1,12 +1,8 @@
 // gbuffer.vert
 //
-// M2 (Lorenzo, problem #5/E1 "F2": M2_shadows_plan.md, SSAO). SSAO needs to know, for every
-// screen pixel, the VIEW-space position and normal of whatever is there - "view space"
-// because ambient occlusion is inherently a camera-relative, screen-space technique (it
-// samples a hemisphere around each pixel and re-projects those samples back to screen space
-// to test against what is actually visible). This is a small extra pass, run once per frame
-// BEFORE the real color pass, that writes exactly those two things (nothing else - no
-// lighting, no textures) into two textures for ssao.frag to read.
+// SSAO needs the view-space position and normal at every pixel, so this pass writes just
+// those two things (no lighting, no textures) into a pair of textures before the real color
+// pass runs.
 
 #version 410 core
 

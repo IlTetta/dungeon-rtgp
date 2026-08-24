@@ -145,8 +145,8 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
         L.color = glm::vec3(1.0f, 0.8f, 0.5f);
         L.intensity = 3.5f;
         L.radius = 10.0f * t;
-        // M2 (M2_shadows_plan.md, S1): same reasoning as dungeon_geometry.h's room light -
-        // a brazier stays LIGHT_POINT (default) and gets a cubemap shadow.
+        // same reasoning as dungeon_geometry.h's room light - a brazier stays LIGHT_POINT
+        // (default) and gets a cubemap shadow.
         L.castsShadow = true;
         scene.lights.push_back(L);
     };

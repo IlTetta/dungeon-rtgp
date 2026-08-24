@@ -3,7 +3,7 @@
 // Renderer class.
 // A "basic forward renderer" with GGX (Cook-Torrance) shading. Its job, once per frame,
 // is to:
-//   1. (M2) render the depth maps of the shadow-casting torches into off-screen FBOs
+//   1. render the depth maps of the shadow-casting torches into off-screen FBOs
 //   2. clear the screen (color + depth buffer)
 //   3. activate our shader program and tell it about the camera, the lights and the
 //      shadow maps: these do not change between one object and the next, so we set them
@@ -24,12 +24,11 @@
 // Schlick's Fresnel approximation and Smith's (Schlick-GGX) geometry term, plus a Lambert
 // diffuse term, with a textured albedo per material.
 //
-// M2: shadow mapping (PCF) for up to MAX_SHADOW_LIGHTS point lights (torches), following
-// the depth-pass + PCF-with-adaptive-bias approach from lecture07a (Davide Gadia), with a
-// perspective (instead of orthographic) light projection, since our lights are point lights
-// and not a directional one - see the long comment at the top of shaders/ggx.frag for what
-// is/isn't taken verbatim from the professor's code. Volumetric fog is still not included
-// here; see render/framebuffer.h for that scaffolding.
+// Shadows: SPOT lights (wall torches) use a 2D depth map + PCF, close to a classic single-
+// light shadow-mapping setup (perspective instead of orthographic, since these are point
+// lights rather than directional). POINT lights (braziers) use a cubemap of world-space
+// distances instead, since a single cone can't cover an omnidirectional light. Volumetric
+// fog is still not included here; see render/framebuffer.h for that scaffolding.
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -47,35 +46,29 @@ public:
     // When on, render() skips every object whose AABB is outside the camera frustum.
     bool cullingEnabled = true;
 
-    // M2 (Lorenzo, M2_shadows_plan.md): live-tunable shading/shadow constants, sent to
-    // ggx.frag as uniforms every frame (see renderInternal()). main.cpp exposes them in an
-    // ImGui "Shadow tuning" panel so we can find good-looking values interactively; once we
-    // like a set, we write it down and bake it in here as the new defaults (and can delete
-    // the panel). Defaults below are exactly what used to be hardcoded `const float` in the
-    // shader, so nothing changes until someone moves a slider.
+    // Live-tunable shading/shadow constants, sent to ggx.frag as uniforms every frame (see
+    // renderInternal()). main.cpp exposes them in an ImGui panel to dial them in without
+    // recompiling; defaults below are what looked right during testing.
     struct ShadingTuning {
         float ambient           = 0.12f;   // base fill light so unlit areas are not pitch black
         float spotBiasMax       = 0.05f;   // SPOT shadow depth bias at grazing angles
         float spotBiasMin       = 0.005f;  // SPOT shadow depth bias at normal incidence
-        float spotNormalOffset  = 0.03f;   // SPOT: push along N before the light-space projection (S2)
+        float spotNormalOffset  = 0.03f;   // SPOT: push along N before the light-space projection
         float pointBiasScale    = 0.05f;   // POINT shadow distance bias at grazing angles (x lightRadius)
         float pointBiasMinScale = 0.02f;   // POINT shadow distance bias at normal incidence (x lightRadius)
-        float pointNormalOffset = 0.06f;   // POINT: push along N before the distance test (S2)
-        float pointPCFRadius    = 0.04f;   // S4: POINT shadow softness (0 = hard single-tap)
+        float pointNormalOffset = 0.06f;   // POINT: push along N before the distance test
+        float pointPCFRadius    = 0.04f;   // POINT shadow softness (0 = hard single-tap)
 
-        // S3 (M2_shadows_plan.md, problem #3): how forgiving the shadow-caster selection is
-        // about swapping lights when the player moves. A light that already has a slot keeps
-        // it as long as it stays within shadowHysteresisMargin of the cutoff distance (>1.0 -
-        // stays in the running a bit past the "strict nearest-K" point, instead of popping out
-        // the instant something else edges closer); shadowFadeSeconds is how long a shadow
-        // takes to ramp fully in/out when a light does enter/leave its slot, instead of
-        // snapping to "shadowed"/"unshadowed" in one frame.
+        // How forgiving the shadow-caster selection is about swapping lights as the player
+        // moves: a light that already has a slot keeps it as long as it stays within
+        // shadowHysteresisMargin of the cutoff distance, instead of popping out the instant
+        // something else edges closer; shadowFadeSeconds is how long a shadow takes to ramp
+        // fully in/out when a light does enter/leave its slot.
         float shadowHysteresisMargin = 1.25f;
         float shadowFadeSeconds      = 0.35f;
 
-        // E1 (M2_shadows_plan.md, problem #5): SSAO ("contact shadow" near where props/walls
-        // meet the floor, independent of any light) - see shaders/ssao.frag for what each one
-        // actually does. ssaoEnabled exists mainly so the tuning panel can A/B it instantly.
+        // SSAO ("contact shadow" near where props/walls meet the floor, independent of any
+        // light) - see shaders/ssao.frag. ssaoEnabled is mostly there for quick A/B testing.
         bool  ssaoEnabled = true;
         float ssaoRadius   = 0.5f;    // view-space units: how far the sample hemisphere reaches
         float ssaoBias     = 0.025f;  // fights the SSAO equivalent of shadow acne
@@ -89,15 +82,14 @@ public:
     // job for a later milestone, not for basic forward rendering.
     static const int MAX_LIGHTS = 32;
 
-    // M2 (locked decision, M2_shadows_plan.md §2: "K_SHADOW = 4"): how many lights can cast a
-    // REAL shadow AT THE SAME TIME, and must match "#define MAX_SHADOW_LIGHTS 4" in
-    // shaders/ggx.frag. Fixed budget across the WHOLE game, not per room: the torch/brazier
-    // count is meant to be a tunable variable, so renderInternal() does not just take "the
-    // first MAX_SHADOW_LIGHTS in Scene::lights" - every frame it picks the MAX_SHADOW_LIGHTS
-    // castsShadow lights closest to the camera, so real shadows follow the player from room
-    // to room. A light that doesn't make the cut this frame falls back to unshadowed (same
-    // as castsShadow == false) - never a crash. A slot can hold either a SPOT (2D map) or a
-    // POINT (cubemap) shadow, decided per-frame by that slot's light's Light::type.
+    // How many lights can cast a REAL shadow at the same time, and must match
+    // "#define MAX_SHADOW_LIGHTS 4" in shaders/ggx.frag. Fixed budget across the whole game,
+    // not per room: renderInternal() does not just take "the first MAX_SHADOW_LIGHTS in
+    // Scene::lights" - every frame it picks the ones closest to the camera, so real shadows
+    // follow the player from room to room. A light that doesn't make the cut this frame
+    // falls back to unshadowed (same as castsShadow == false) - never a crash. A slot can
+    // hold either a SPOT (2D map) or a POINT (cubemap) shadow, decided per-frame by that
+    // slot's light's Light::type.
     static const int MAX_SHADOW_LIGHTS = 4;
 
     // Resolution of a SPOT light's 2D shadow map (square). 1024 is the usual starting point
@@ -106,9 +98,9 @@ public:
     static const int SHADOW_MAP_SIZE = 1024;
 
     // Resolution of ONE FACE of a POINT light's cubemap shadow. Smaller than SHADOW_MAP_SIZE
-    // on purpose: a cubemap is 6 of these per light (vs. 1 map for a SPOT), so the total texel
-    // budget per point-shadow-caster is already 6x - keeping each face at 512 instead of 1024
-    // keeps that budget roughly comparable to a SPOT light's.
+    // on purpose: a cubemap is 6 of these per light, so the total texel budget per point-
+    // shadow-caster is already 6x - keeping each face at 512 instead of 1024 keeps that
+    // budget roughly comparable to a SPOT light's.
     static const int POINT_SHADOW_SIZE = 512;
 
     // Loads and compiles the given vertex/fragment shader pair (paths relative to the
@@ -163,38 +155,36 @@ private:
     int viewportWidth;
     int viewportHeight;
 
-    // S3 (M2_shadows_plan.md, problem #3 "pop-in"): per-scene-light fade weight (0 = no
-    // shadow effect, 1 = full), indexed the same way as Scene::lights - persists ACROSS
-    // frames (unlike everything else in renderInternal, which is recomputed from scratch each
-    // frame) so a light's shadow can ramp in/out instead of popping. Resized/reset to all-0
-    // whenever its size no longer matches scene.lights.size() (the dungeon was regenerated -
-    // there is no "old" light to continue a fade from, starting fresh is correct, not a bug).
+    // Per-scene-light fade weight (0 = no shadow effect, 1 = full), indexed the same way as
+    // Scene::lights - persists ACROSS frames (unlike everything else in renderInternal,
+    // recomputed from scratch every frame) so a light's shadow can ramp in/out instead of
+    // popping. Reset to all-0 whenever its size no longer matches scene.lights.size() (the
+    // dungeon was regenerated, so there is no "old" light to continue a fade from).
     std::vector<float> shadowWeight;
 
     // Wall-clock time (glfwGetTime()) at the end of the previous renderInternal() call, so we
-    // can compute a per-frame delta for the fade above without needing main.cpp to pass one
-    // in. -1 marks "no previous frame yet" (first call: dt = 0, nothing to fade yet).
+    // can compute a per-frame delta for the fade above without main.cpp passing one in. -1
+    // marks "no previous frame yet".
     float lastFrameTime = -1.0f;
 
-    // --- M2: shadow mapping state ---
+    // --- shadow mapping state ---
     // SPOT (cone) shadows: depth-only shader (shaders/shadowmap.vert/.frag), one FBO + one
     // 2D depth texture per potential shadow-casting slot.
     Shader shadowShader;
     GLuint shadowFBO[MAX_SHADOW_LIGHTS];
     GLuint shadowMapTex[MAX_SHADOW_LIGHTS];
 
-    // POINT (cubemap) shadows (M2_shadows_plan.md, S1, single-pass "F2" version): a
-    // vertex+geometry+fragment shader (shaders/pointshadow.vert/.geom/.frag) that renders ALL
-    // 6 faces of a light's cubemap in ONE draw call per object (the geometry shader re-emits
-    // each triangle 6 times, once per face, via gl_Layer - see pointshadow.geom), instead of
-    // the earlier version's 6 separate draw-call passes. One FBO + one cubemap (GL_R32F: world
-    // distance from the light, see pointshadow.frag) per potential shadow-casting slot, with
-    // the WHOLE cubemap attached as a single LAYERED color target (glFramebufferTexture, not
+    // POINT (cubemap) shadows: a vertex+geometry+fragment shader
+    // (shaders/pointshadow.vert/.geom/.frag) that renders all 6 faces of a light's cubemap in
+    // one draw call per object - the geometry shader re-emits each triangle 6 times, once per
+    // face, via gl_Layer (see pointshadow.geom). One FBO + one cubemap (GL_R32F: world
+    // distance from the light) per potential shadow-casting slot, with the whole cubemap
+    // attached as a single layered color target (glFramebufferTexture, not
     // glFramebufferTexture2D - the latter only attaches one face). Depth needs to be layered
-    // too now (all 6 faces are rasterized in the same draw call, each must depth-test only
-    // against its own face) - one shared depth CUBEMAP (not a renderbuffer, layered
-    // attachment needs an actual texture), reused across slots since they still render one
-    // at a time, sequentially.
+    // too, since all 6 faces are rasterized in the same draw call and each must depth-test
+    // only against its own face - one shared depth cubemap (a renderbuffer can't do layered
+    // attachment, needs to be an actual texture), reused across slots since they still render
+    // one at a time.
     Shader pointShadowShader;
     GLuint shadowCubeFBO[MAX_SHADOW_LIGHTS];
     GLuint shadowCubeTex[MAX_SHADOW_LIGHTS];
@@ -223,7 +213,7 @@ private:
     // pointShadowShader. Called once per POINT shadow-casting brazier, before the color pass.
     void renderPointShadowPass(const Scene& scene, int slot, const Light& light);
 
-    // --- E1: SSAO state (M2_shadows_plan.md, problem #5) ---
+    // --- SSAO state ---
     // Resolution the G-buffer/SSAO textures are allocated at; kept in sync with the real
     // viewport by setViewport() (see resizeSSAO()).
     int ssaoWidth = 0;
@@ -242,7 +232,7 @@ private:
     GLuint quadVAO = 0, quadVBO = 0;   // the 2-triangle full-screen quad the two passes above draw
 
     // Creates every SSAO GPU resource above (called once from the constructor) and computes
-    // the (fixed, does not need recomputing per frame) hemisphere kernel.
+    // the hemisphere kernel (fixed, does not need recomputing per frame).
     void initSSAO();
 
     // Re-creates the G-buffer/SSAO textures at a new size (the AO texture must be pixel-for-

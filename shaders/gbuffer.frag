@@ -1,8 +1,7 @@
 // gbuffer.frag
 //
-// See gbuffer.vert for why this pass exists. Two outputs, nothing else: the view-space
-// position and normal of the closest surface at this pixel, into two separate floating-point
-// textures (Renderer::initSSAO) that ssao.frag reads back next.
+// Two outputs, nothing else: view-space position and normal of the closest surface at this
+// pixel, for ssao.frag to read back.
 
 #version 410 core
 

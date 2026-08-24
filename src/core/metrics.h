@@ -26,11 +26,8 @@ struct FrameMetrics {
     int trianglesDrawn  = 0;      // filled by Renderer (how many triangles were sent)
     int fogSteps        = 0;      // filled by Renderer (ray-march steps of the fog, M3)
 
-    // M2 (Lorenzo, see M2_shadows_plan.md §4/§6): how many lights actually cast a real shadow
-    // this frame (<= Renderer::MAX_SHADOW_LIGHTS, the nearest-to-camera castsShadow lights),
-    // and how many shadow depth passes that took - a POINT light costs 6 (one per cubemap
-    // face), a SPOT light costs 1. shadowPasses is the number that should track against frame
-    // time in the "#lights scaling" benchmark experiment.
+    // how many lights actually cast a real shadow this frame, and how many depth passes that
+    // took (a POINT light costs 6, one per cubemap face; a SPOT light costs 1)
     int shadowLights    = 0;      // filled by Renderer
     int shadowPasses    = 0;      // filled by Renderer
 };
