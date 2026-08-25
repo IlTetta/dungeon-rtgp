@@ -332,6 +332,36 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
                 reserve(occ, bx, cz, 0.7f);
             }
 
+            // --- P2: fill the showpiece room so it doesn't feel empty ---
+            // columns flanking the altar (floor-to-ceiling)
+            for (int s = -1; s <= 1; s += 2) {
+                float colx = cx + s * 5.0f;
+                addPropInstance(scene, column, columnModel(colx, cz, 0.0f));
+                reserve(occ, colx, cz, footprintRadius(column));
+            }
+            // a couple of extra floor statues (no pedestal), each facing the centre
+            for (int s = 0; s < 2; s++) {
+                glm::vec2 spot;
+                if (findSpot(occ, room, 0.6f, spot)) {
+                    float sy = std::atan2(cx - spot.x, cz - spot.y);   // face the centre
+                    addPropInstance(scene, statue, floorModel(statue, spot.x, spot.y, sy, 0.85f));
+                }
+            }
+            // scattered urns + one rubble pile for clutter
+            for (int c = 0; c < 4; c++) {
+                glm::vec2 spot;
+                if (findSpot(occ, room, footprintRadius(urn), spot))
+                    addPropInstance(scene, urn, floorModel(urn, spot.x, spot.y, rf(0.0f, 6.28f), 1.0f));
+            }
+            {
+                glm::vec2 spot;
+                if (findSpot(occ, room, 1.2f, spot)) {
+                    int n = ri(3, 5);
+                    for (int k = 0; k < n; k++)
+                        addPropInstance(scene, rubble, floorModel(rubble, spot.x + rf(-0.6f, 0.6f), spot.y + rf(-0.6f, 0.6f), rf(0.0f, 6.28f), rf(0.7f, 1.3f)));
+                }
+            }
+
             // hanging chains
             for (int c = 0; c < 4; c++) {
                 glm::vec2 spot;
