@@ -58,11 +58,11 @@ inline PropAsset loadPropAsset(Scene& scene, const std::string& name, float roug
     return { meshIndex, materialIndex, meshLocalBounds(scene.meshes[meshIndex]) };
 }
 
-inline void addPropInstance(Scene& scene, const PropAsset& a, const glm::mat4& model) {
+inline void addPropInstance(Scene& scene, const PropAsset& a, const glm::mat4& model, MaterialId kind = MAT_PROP) {
     RenderObject obj;
     obj.meshIndex = a.meshIndex;
     obj.materialIndex = a.materialIndex;
-    obj.material = MAT_PROP;
+    obj.material = kind;   // MAT_PROP (blocks the player) by default; MAT_DECOR for wall torches
     obj.modelMatrix = model;
 
     glm::vec3 wmin(1e9f), wmax(-1e9f);
@@ -96,7 +96,31 @@ inline glm::vec2 findRoomEntrance(const Dungeon& d, const Rect& room, float t) {
 // one occupied circle on the floor (so props don't overlap)
 struct Footprint { glm::vec2 pos; float radius; };
 
-inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& params, ChainSystem& chains) {
+// Tunable torch/lighting parameters, editable at runtime from the ImGui "Lighting" window.
+// Brightness/reach/color apply LIVE (applyTorchLightTuning below); the placement fields
+// (spacing/height/tilt/corridor stride) only take effect on a Regenerate.
+struct LightingParams {
+    float torchSpacing   = 6.0f;   // ~one wall torch every N world units
+    int   corridorEvery  = 4;      // corridor torch stride (higher = fewer torches)
+    float torchHeight    = 2.0f;   // mount height on the wall
+    float coneTilt       = 0.35f;  // how much the shadow cone tilts downward into the room
+    glm::vec3 torchColor = glm::vec3(1.0f, 0.75f, 0.45f);
+    float torchIntensity = 1.6f;
+    float torchRadius    = 5.0f;   // in TILES (world radius = torchRadius * tileSize)
+};
+
+// Live-update the torch lights from the current params (no rebuild needed for brightness / reach /
+// color). Torches are tagged with Light::isTorch, so room lights are left untouched.
+inline void applyTorchLightTuning(Scene& scene, const LightingParams& lp, float tileSize) {
+    for (Light& L : scene.lights) {
+        if (!L.isTorch) continue;
+        L.intensity = lp.torchIntensity;
+        L.radius    = lp.torchRadius * tileSize;
+        L.color     = lp.torchColor;
+    }
+}
+
+inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& params, ChainSystem& chains, const LightingParams& lp) {
     float t = params.tileSize;
     float ceilingY = params.wallHeight;
 
@@ -104,7 +128,10 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
     auto rf = [&](float lo, float hi) { std::uniform_real_distribution<float> d(lo, hi); return d(rng); };
     auto ri = [&](int lo, int hi) { std::uniform_int_distribution<int> d(lo, hi); return d(rng); };
 
-    PropAsset brazier = loadPropAsset(scene, "brazier", 0.5f);
+    // Braziers are disabled for now (wall torches provide the room light + shadows), but kept
+    // loadable/commented in case we bring them back for ambiance later.
+    // PropAsset brazier = loadPropAsset(scene, "brazier", 0.5f);
+    PropAsset torch   = loadPropAsset(scene, "torch",   0.55f);   // wall-mounted, iron; light source
     PropAsset column  = loadPropAsset(scene, "column",  0.8f);
     PropAsset statue  = loadPropAsset(scene, "statue",  0.6f);
     PropAsset altar   = loadPropAsset(scene, "altar",   0.7f);
@@ -139,14 +166,16 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
         return m;
     };
 
-    auto addLight = [&](float x, float y, float z) {
-        Light L;
-        L.position = glm::vec3(x, y, z);
-        L.color = glm::vec3(1.0f, 0.8f, 0.5f);
-        L.intensity = 3.5f;
-        L.radius = 10.0f * t;
-        scene.lights.push_back(L);
-    };
+    // addLight() was used only by the braziers (now disabled). Wall torches push their own Light
+    // directly (see placeWallTorches below). Kept commented so re-enabling braziers stays easy:
+    // auto addLight = [&](float x, float y, float z) {
+    //     Light L;
+    //     L.position = glm::vec3(x, y, z);
+    //     L.color = glm::vec3(1.0f, 0.8f, 0.5f);
+    //     L.intensity = 3.5f;
+    //     L.radius = 10.0f * t;
+    //     scene.lights.push_back(L);
+    // };
 
     // reserve a spot (add a footprint without checking) - for props placed at fixed positions
     auto reserve = [&](std::vector<Footprint>& occ, float x, float z, float radius) {
@@ -169,6 +198,101 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
         return false;
     };
 
+    // --- wall torches ---
+    // A wall torch is a SPOT light (a cone aimed into the room), non-blocking (MAT_DECOR, because
+    // the collision ignores height and a solid torch would act as an invisible wall). It emits a
+    // warm accent light and casts a shadow; which torches actually cast a shadow map each frame is
+    // decided by the renderer (nearest MAX_SHADOW_LIGHTS to the camera - see renderer.cpp).
+
+    // place one torch: mesh + a warm light, at `(px,pz)` on a wall face at height `y`, facing `n`
+    auto addTorch = [&](float px, float pz, float y, glm::vec3 n) {
+        float yaw = std::atan2(-n.x, -n.z);   // torch mesh faces -Z by default -> aim it along n
+        glm::mat4 m(1.0f);
+        m = glm::translate(m, glm::vec3(px, y, pz));
+        m = glm::rotate(m, yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+        addPropInstance(scene, torch, m, MAT_DECOR);
+
+        Light L;
+        L.position = glm::vec3(px, y + 0.6f, pz) + n * 0.3f;   // at the flame, a bit into the room
+        L.color = lp.torchColor;
+        L.intensity = lp.torchIntensity;                       // moderate: many torches can be lit at once
+        L.radius = lp.torchRadius * t;
+        L.isTorch = true;                                      // tunable from the Lighting window
+        // Shadows are reverted to the merge state (dormant): torches are LIGHT-only for now. The
+        // shadow cone direction is still computed, ready for when torch shadows are redone properly
+        // (see M2_shadows_plan.md).
+        L.castsShadow = false;
+        L.direction = glm::normalize(n + glm::vec3(0.0f, -lp.coneTilt, 0.0f));
+        scene.lights.push_back(L);
+    };
+
+    // wall torches for a room: evenly spaced along EVERY side, skipping the spots that fall on a
+    // corridor opening (so a torch never floats in a doorway). Unlike before, sides WITH a corridor
+    // are no longer skipped whole - only the individual opening spots are.
+    auto placeWallTorches = [&](const Rect& room) {
+        const float torchY = lp.torchHeight;   // mount height on the wall (walls are wallHeight = 4.5)
+
+        //   horizontal : side runs along X (north/south) if true, along Z (west/east) if false
+        //   ringGrid   : grid row/col of the wall ring just outside the room
+        //   alongStart / lenTiles : the run of the side, in tiles
+        //   innerFace  : world coord (Z if horizontal, X if vertical) of the wall's inner face
+        //   n          : inward normal (into the room)
+        auto placeSide = [&](bool horizontal, int ringGrid, int alongStart, int lenTiles,
+                             float innerFace, glm::vec3 n) {
+            float sideLen = lenTiles * t;
+            int count = std::max(1, (int)std::lround(sideLen / lp.torchSpacing));
+            float start = alongStart * t;
+            for (int k = 0; k < count; k++) {
+                float along = start + sideLen * (k + 0.5f) / count;   // evenly spaced, half-margins
+                // skip if the wall cell behind this spot is an opening (corridor), not solid
+                int cell = (int)(along / t);
+                int gx = horizontal ? cell : ringGrid;
+                int gy = horizontal ? ringGrid : cell;
+                if (gx < 0 || gy < 0 || gx >= dungeon.width || gy >= dungeon.height) continue;
+                if (dungeon.get(gx, gy) == FLOOR) continue;   // opening here -> no torch
+                float px = horizontal ? along : innerFace;
+                float pz = horizontal ? innerFace : along;
+                addTorch(px, pz, torchY, n);
+            }
+        };
+
+        int x0 = room.x, y0 = room.y, w = room.w, h = room.h;
+        placeSide(true,  y0 - 1, x0, w, y0 * t,         glm::vec3(0.0f, 0.0f,  1.0f));   // north wall
+        placeSide(true,  y0 + h, x0, w, (y0 + h) * t,   glm::vec3(0.0f, 0.0f, -1.0f));   // south wall
+        placeSide(false, x0 - 1, y0, h, x0 * t,         glm::vec3( 1.0f, 0.0f, 0.0f));   // west wall
+        placeSide(false, x0 + w, y0, h, (x0 + w) * t,   glm::vec3(-1.0f, 0.0f, 0.0f));   // east wall
+    };
+
+    // torches in the corridors (floor cells that are NOT inside any room), so corridors are not
+    // pitch black. One every few cells, on the first adjacent wall we find, facing the corridor.
+    auto placeCorridorTorches = [&]() {
+        auto inAnyRoom = [&](int gx, int gy) {
+            for (const Rect& r : dungeon.rooms)
+                if (gx >= r.x && gx < r.x + r.w && gy >= r.y && gy < r.y + r.h) return true;
+            return false;
+        };
+        const int dxs[4] = { 0, 0, -1, 1 };
+        const int dys[4] = { -1, 1, 0, 0 };
+        for (int gy = 0; gy < dungeon.height; gy++) {
+            for (int gx = 0; gx < dungeon.width; gx++) {
+                if (dungeon.get(gx, gy) != FLOOR) continue;
+                if (inAnyRoom(gx, gy)) continue;                   // rooms are handled by wall torches
+                int every = std::max(1, lp.corridorEvery);
+                if (((gx * 3 + gy * 5) % every) != 0) continue;    // space them out along the corridor
+                for (int d = 0; d < 4; d++) {
+                    int wx = gx + dxs[d], wy = gy + dys[d];
+                    if (wx < 0 || wy < 0 || wx >= dungeon.width || wy >= dungeon.height) continue;
+                    if (dungeon.get(wx, wy) != WALL) continue;
+                    glm::vec3 n((float)-dxs[d], 0.0f, (float)-dys[d]);   // from the wall into the corridor
+                    float px = (gx + 0.5f) * t + dxs[d] * (t * 0.5f);    // on the shared wall face
+                    float pz = (gy + 0.5f) * t + dys[d] * (t * 0.5f);
+                    addTorch(px, pz, lp.torchHeight, n);
+                    break;   // one torch per corridor cell
+                }
+            }
+        }
+    };
+
     // largest room = showpiece
     int largestIdx = -1, largestArea = 0;
     for (int i = 0; i < (int)dungeon.rooms.size(); i++) {
@@ -184,6 +308,9 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
 
         std::vector<Footprint> occ;   // occupied floor spots in this room
 
+        // wall torches on every solid side (all rooms, showpiece included)
+        placeWallTorches(room);
+
         // -------- showpiece room --------
         if (i == largestIdx) {
             addPropInstance(scene, altar, floorModel(altar, cx, cz, 0.0f, 1.0f));
@@ -197,12 +324,14 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
             sm = glm::rotate(sm, yaw, glm::vec3(0.0f, 1.0f, 0.0f));
             addPropInstance(scene, statue, sm);
 
-            for (int s = -1; s <= 1; s += 2) {
-                float bx = cx + s * 3.0f;
-                addPropInstance(scene, brazier, floorModel(brazier, bx, cz, 0.0f, 1.0f));
-                addLight(bx, 1.2f, cz);
-                reserve(occ, bx, cz, 0.7f);
-            }
+            // Flanking braziers disabled for now (wall torches provide light/shadows). Kept for
+            // possible ambiance:
+            // for (int s = -1; s <= 1; s += 2) {
+            //     float bx = cx + s * 3.0f;
+            //     addPropInstance(scene, brazier, floorModel(brazier, bx, cz, 0.0f, 1.0f));
+            //     addLight(bx, 1.2f, cz);
+            //     reserve(occ, bx, cz, 0.7f);
+            // }
             for (int c = 0; c < 4; c++) {
                 glm::vec2 spot;
                 if (findSpot(occ, room, 0.4f, spot))
@@ -212,9 +341,10 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
         }
 
         // -------- normal room --------
-        // central brazier = the room's main light (the room light from dungeon_geometry is here)
-        addPropInstance(scene, brazier, floorModel(brazier, cx, cz, rf(0.0f, 6.28f), 1.0f));
-        reserve(occ, cx, cz, 0.7f);
+        // central brazier disabled for now (wall torches light the room; the room's base light
+        // still comes from dungeon_geometry). Kept for possible ambiance:
+        // addPropInstance(scene, brazier, floorModel(brazier, cx, cz, rf(0.0f, 6.28f), 1.0f));
+        reserve(occ, cx, cz, 0.7f);   // keep the room center clear (as if the brazier were there)
 
         // colonnade along the two side walls of big rooms (fixed positions -> reserved)
         if (room.w >= 6 && room.h >= 6) {
@@ -228,16 +358,17 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
             }
         }
 
-        // big rooms: two extra braziers (with lights), placed in free spots
-        if (area >= 60) {
-            for (int b = 0; b < 2; b++) {
-                glm::vec2 spot;
-                if (findSpot(occ, room, 0.7f, spot)) {
-                    addPropInstance(scene, brazier, floorModel(brazier, spot.x, spot.y, rf(0.0f, 6.28f), 1.0f));
-                    addLight(spot.x, 1.2f, spot.y);
-                }
-            }
-        }
+        // big rooms: two extra braziers (with lights) - disabled for now (wall torches do the job),
+        // kept for possible ambiance:
+        // if (area >= 60) {
+        //     for (int b = 0; b < 2; b++) {
+        //         glm::vec2 spot;
+        //         if (findSpot(occ, room, 0.7f, spot)) {
+        //             addPropInstance(scene, brazier, floorModel(brazier, spot.x, spot.y, rf(0.0f, 6.28f), 1.0f));
+        //             addLight(spot.x, 1.2f, spot.y);
+        //         }
+        //     }
+        // }
 
         // barrels / crates / urns scattered (count grows with room size), no overlaps
         int nContainers = std::min(6, std::max(2, area / 12));
@@ -269,4 +400,7 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
             }
         }
     }
+
+    // corridors get their own torches so they are not pitch black (rooms did theirs above)
+    placeCorridorTorches();
 }

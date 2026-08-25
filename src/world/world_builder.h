@@ -33,7 +33,7 @@ const int DUNGEON_TILES_Y = 30;
 // this way destroys the old meshes and frees them on the GPU automatically, no manual cleanup.
 // (The per-object textures are reloaded each time though: see world_notes, that is a known
 // small leak, fine for an occasional debug regeneration.)
-inline void buildWorld(unsigned int seed, const DungeonParams& params,
+inline void buildWorld(unsigned int seed, const DungeonParams& params, const LightingParams& lp,
                        Scene& scene, ChainSystem& chains, Camera& camera) {
     // 1. generate the 2D dungeon (WALL / FLOOR grid) for this seed
     DungeonGenerator generator(DUNGEON_TILES_X, DUNGEON_TILES_Y, seed);
@@ -46,7 +46,7 @@ inline void buildWorld(unsigned int seed, const DungeonParams& params,
     // 3. props + dynamic chains. The chain system stores indices into scene.objects, so it must
     // start empty for the new scene; addProps then re-creates the chains.
     chains.chains.clear();
-    addProps(scene, dungeon, params, chains);
+    addProps(scene, dungeon, params, chains, lp);
 
     // 4. spawn the camera at eye height near the center of the first room (same rule as before),
     // offset a bit so we do not spawn right inside the central brazier.

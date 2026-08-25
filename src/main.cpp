@@ -145,9 +145,10 @@ int main() {
     // wrapped in buildWorld() so we can rebuild it from a new seed at runtime (see the HUD below).
     DungeonParams params;                 // default tile size / wall height
     unsigned int dungeonSeed = 12345;     // seed of the CURRENT dungeon (editable from the HUD)
+    LightingParams lightingParams;        // torch/light tuning (editable from the "Lighting" window)
     Scene scene;
     ChainSystem chainSystem;
-    buildWorld(dungeonSeed, params, scene, chainSystem, camera);   // static props + hanging chains
+    buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);   // static props + hanging chains
 
     // --- renderer (GGX forward shading) ---
     Renderer renderer("shaders/ggx.vert", "shaders/ggx.frag");
@@ -188,6 +189,10 @@ int main() {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+
+        // push the live torch tuning (brightness / reach / color) into the scene lights each frame,
+        // so the "Lighting" window sliders are visible immediately without a rebuild
+        applyTorchLightTuning(scene, lightingParams, params.tileSize);
 
         // draw the whole scene (this clears the screen, does the culling, and fills the
         // object/draw/light counters in "metrics")
@@ -248,13 +253,13 @@ int main() {
             dungeonSeed = (unsigned int)seedField;
         }
         if (ImGui::Button("Generate")) {
-            buildWorld(dungeonSeed, params, scene, chainSystem, camera);
+            buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
             firstMouse = true;   // the camera teleported: avoid a mouse-look jump next frame
         }
         ImGui::SameLine();
         if (ImGui::Button("Random seed")) {
             dungeonSeed = (unsigned int)(glfwGetTime() * 100000.0);
-            buildWorld(dungeonSeed, params, scene, chainSystem, camera);
+            buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
             firstMouse = true;
         }
 
@@ -269,6 +274,26 @@ int main() {
 
         ImGui::Separator();
         ImGui::TextDisabled("TAB cursor - C culling - V debug cam - WASD move - Shift sprint - ESC quit");
+        ImGui::End();
+
+        // --- Lighting / torches tuning (separate window) ---
+        // Live sliders (intensity/radius/color) are pushed into the scene lights every frame by
+        // applyTorchLightTuning(); the placement sliders only take effect on "Regenerate".
+        ImGui::Begin("Lighting / Torches");
+        ImGui::TextDisabled("Live (applied immediately):");
+        ImGui::SliderFloat("Intensity", &lightingParams.torchIntensity, 0.0f, 5.0f);
+        ImGui::SliderFloat("Radius (tiles)", &lightingParams.torchRadius, 1.0f, 15.0f);
+        ImGui::ColorEdit3("Color", &lightingParams.torchColor.x);
+        ImGui::Separator();
+        ImGui::TextDisabled("Placement (press Regenerate to apply):");
+        ImGui::SliderFloat("Wall spacing (u)", &lightingParams.torchSpacing, 2.0f, 15.0f);
+        ImGui::SliderInt("Corridor every", &lightingParams.corridorEvery, 1, 8);
+        ImGui::SliderFloat("Mount height (u)", &lightingParams.torchHeight, 1.0f, 4.0f);
+        ImGui::SliderFloat("Cone tilt down", &lightingParams.coneTilt, 0.0f, 1.0f);
+        if (ImGui::Button("Regenerate with these")) {
+            buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
+            firstMouse = true;   // camera teleported: avoid a mouse-look jump next frame
+        }
         ImGui::End();
 
         // draw the HUD on top of the scene, then present the frame

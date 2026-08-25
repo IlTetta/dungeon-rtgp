@@ -26,8 +26,9 @@ inline glm::vec3 resolveWallCollisions(glm::vec3 center, float radius, const Sce
     // might end up slightly inside another (for example in a corner), so a second pass fixes it.
     for (int pass = 0; pass < 2; pass++) {
         for (const RenderObject& obj : scene.objects) {
-            if (obj.material == MAT_FLOOR || obj.material == MAT_CEILING || obj.material == MAT_CHAIN)
-                continue;   // floors, ceilings and (swingable) chains never block the player
+            if (obj.material == MAT_FLOOR || obj.material == MAT_CEILING ||
+                obj.material == MAT_CHAIN || obj.material == MAT_DECOR)
+                continue;   // floors, ceilings, chains and wall decor (torches) never block the player
             const AABB& box = obj.worldBounds;
 
             // closest point on the box's X/Z footprint to the player circle center

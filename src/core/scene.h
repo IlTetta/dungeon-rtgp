@@ -63,6 +63,10 @@ struct Light {
     // parallel to world-up); default points forward so an unset light never produces NaNs
     // even if castsShadow ends up true by mistake.
     glm::vec3 direction = glm::vec3(0.0f, 0.0f, 1.0f);
+
+    // Scene-side tag (Andrea): true for wall / corridor torches, so the ImGui "Lighting" window can
+    // tune only the torch lights at runtime (applyTorchLightTuning). Room lights leave it false.
+    bool isTorch = false;
 };
 
 // A visual material: HOW a surface looks. For now: an albedo (base color) texture, a texture
