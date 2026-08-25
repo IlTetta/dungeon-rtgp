@@ -43,6 +43,14 @@ struct RenderObject {
     int materialIndex = 0;
 };
 
+// A light is either a SPOT (aimed into a cone - a wall torch) or a POINT (omnidirectional -
+// a brazier); each needs a different shadow technique (2D map vs. cubemap). Every light
+// placed today is a floor brazier, so LIGHT_POINT is the default.
+enum LightType {
+    LIGHT_POINT,   // omnidirectional (braziers) - cubemap shadow, no "direction"
+    LIGHT_SPOT     // aimed cone (wall torches) - needs Light::direction
+};
+
 // A point light. In our project these are the torches / braziers in the dungeon.
 struct Light {
     glm::vec3 position;
@@ -50,18 +58,15 @@ struct Light {
     float intensity;
     float radius;    // distance after which the light contribution is ~0 (attenuation)
 
-    // M2 (Lorenzo, shadow mapping): does this light cast a shadow? Off by default, so any
-    // light nobody explicitly opts in (e.g. Andrea's real dungeon torches, for now) behaves
-    // exactly as before - no shadow, always "fully lit" like in M1. The renderer only takes
-    // the first Renderer::MAX_SHADOW_LIGHTS lights with this set to true (see renderer.cpp).
+    // does this light cast a shadow? Off by default. The renderer picks the
+    // MAX_SHADOW_LIGHTS lights with this set to true that are closest to the camera each
+    // frame, not just the first ones in the list.
     bool castsShadow = false;
 
-    // M2: which way this light is "aimed", only used (and only meaningful) when
-    // castsShadow == true - the shadow map is built as a single ~100 degree cone around
-    // this direction (see Renderer::computeLightSpaceMatrix), not a full cubemap. Needs to
-    // be a normalized-ish, non-vertical direction (glm::lookAt degenerates if it is
-    // parallel to world-up); default points forward so an unset light never produces NaNs
-    // even if castsShadow ends up true by mistake.
+    LightType type = LIGHT_POINT;
+
+    // which way this light is "aimed" - only meaningful for type == LIGHT_SPOT. Must not be
+    // vertical (glm::lookAt degenerates if parallel to world-up); default points forward.
     glm::vec3 direction = glm::vec3(0.0f, 0.0f, 1.0f);
 
     // Scene-side tag (Andrea): true for wall / corridor torches, so the ImGui "Lighting" window can

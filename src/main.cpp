@@ -239,8 +239,35 @@ int main() {
         ImGui::Text("Objects culled: %d", metrics.objectsCulled);
         ImGui::Text("Triangles     : %d", metrics.trianglesDrawn);
         ImGui::Text("Lights        : %d", metrics.activeLights);
+        ImGui::Text("Shadow lights : %d  (%d passes)", metrics.shadowLights, metrics.shadowPasses);
         ImGui::Separator();
         ImGui::Text("Frustum culling: %s", cullingEnabled ? "ON" : "OFF");
+
+        // shading/shadow constants, live - move them around until it looks right, then bake
+        // the values in as the new defaults.
+        ImGui::Separator();
+        if (ImGui::CollapsingHeader("Shadow tuning")) {
+            ImGui::SliderFloat("Ambient", &renderer.tuning.ambient, 0.0f, 0.5f);
+            ImGui::TextDisabled("SPOT (wall torches)");
+            ImGui::SliderFloat("Spot bias max", &renderer.tuning.spotBiasMax, 0.0f, 0.2f);
+            ImGui::SliderFloat("Spot bias min", &renderer.tuning.spotBiasMin, 0.0f, 0.05f);
+            ImGui::SliderFloat("Spot normal offset", &renderer.tuning.spotNormalOffset, 0.0f, 0.2f);
+            ImGui::TextDisabled("POINT (braziers, cubemap)");
+            ImGui::SliderFloat("Point bias scale", &renderer.tuning.pointBiasScale, 0.0f, 0.2f);
+            ImGui::SliderFloat("Point bias min scale", &renderer.tuning.pointBiasMinScale, 0.0f, 0.1f);
+            ImGui::SliderFloat("Point normal offset", &renderer.tuning.pointNormalOffset, 0.0f, 0.3f);
+            ImGui::SliderFloat("Point softness", &renderer.tuning.pointPCFRadius, 0.0f, 0.15f);
+            ImGui::TextDisabled("Pop-in fix");
+            ImGui::SliderFloat("Hysteresis margin", &renderer.tuning.shadowHysteresisMargin, 1.0f, 2.0f);
+            ImGui::SliderFloat("Fade seconds", &renderer.tuning.shadowFadeSeconds, 0.0f, 1.5f);
+            ImGui::TextDisabled("Contact shadows (SSAO)");
+            ImGui::Checkbox("SSAO enabled", &renderer.tuning.ssaoEnabled);
+            ImGui::SliderFloat("SSAO radius", &renderer.tuning.ssaoRadius, 0.05f, 2.0f);
+            ImGui::SliderFloat("SSAO bias", &renderer.tuning.ssaoBias, 0.0f, 0.1f);
+            ImGui::SliderFloat("SSAO strength", &renderer.tuning.ssaoStrength, 0.5f, 4.0f);
+            if (ImGui::Button("Reset to defaults"))
+                renderer.tuning = Renderer::ShadingTuning();
+        }
 
         // --- M3 tools ---
         // (1) regenerate the dungeon from a seed, live. ImGui has no unsigned field, so we edit an

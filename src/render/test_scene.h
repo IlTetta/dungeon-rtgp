@@ -151,6 +151,7 @@ inline void build(Scene& scene) {
     torchA.intensity = 1.5f;
     torchA.radius = 8.0f;
     torchA.castsShadow = true;
+    torchA.type = LIGHT_SPOT;   // has a real "direction" below, so it wants the cone shadow
     torchA.direction = glm::normalize(glm::vec3(0.0f, 0.5f, -1.5f) - torchA.position);
     scene.lights.push_back(torchA);
 
@@ -160,6 +161,7 @@ inline void build(Scene& scene) {
     torchB.intensity = 1.5f;
     torchB.radius = 8.0f;
     torchB.castsShadow = true;
+    torchB.type = LIGHT_SPOT;
     torchB.direction = glm::normalize(glm::vec3(2.0f, 0.5f, 1.0f) - torchB.position);
     scene.lights.push_back(torchB);
 }

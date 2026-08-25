@@ -25,4 +25,9 @@ struct FrameMetrics {
     int drawCalls       = 0;      // how many draw calls this frame (= objects actually drawn)
     int trianglesDrawn  = 0;      // filled by Renderer (how many triangles were sent)
     int fogSteps        = 0;      // filled by Renderer (ray-march steps of the fog, M3)
+
+    // how many lights actually cast a real shadow this frame, and how many depth passes that
+    // took (a POINT light costs 6, one per cubemap face; a SPOT light costs 1)
+    int shadowLights    = 0;      // filled by Renderer
+    int shadowPasses    = 0;      // filled by Renderer
 };

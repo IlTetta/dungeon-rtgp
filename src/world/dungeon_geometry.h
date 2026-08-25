@@ -119,6 +119,10 @@ inline DungeonLayout buildDungeonLayout(const Dungeon& d, const DungeonParams& p
         light.color = glm::vec3(1.0f, 0.8f, 0.5f);   // warm, orange-ish
         light.intensity = 3.5f;                      // brighter so props are clearly visible
         light.radius = 10.0f * t;                    // reaches farther, into the corridors a bit
+        // a brazier has no natural "aim", so it stays LIGHT_POINT (the default) and gets a
+        // cubemap shadow. Which lights actually get a real shadow each frame is decided
+        // dynamically by nearest-to-camera in Renderer::renderInternal, not here.
+        light.castsShadow = true;
         layout.lights.push_back(light);
     }
 

@@ -167,13 +167,15 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
     };
 
     // addLight() was used only by the braziers (now disabled). Wall torches push their own Light
-    // directly (see placeWallTorches below). Kept commented so re-enabling braziers stays easy:
+    // directly (see placeWallTorches below). Kept commented so re-enabling braziers stays easy;
+    // when reinstated a brazier stays LIGHT_POINT (default) and gets a cubemap shadow:
     // auto addLight = [&](float x, float y, float z) {
     //     Light L;
     //     L.position = glm::vec3(x, y, z);
     //     L.color = glm::vec3(1.0f, 0.8f, 0.5f);
     //     L.intensity = 3.5f;
     //     L.radius = 10.0f * t;
+    //     L.castsShadow = true;   // LIGHT_POINT -> cubemap shadow (Lorenzo's POINT path)
     //     scene.lights.push_back(L);
     // };
 
@@ -218,10 +220,10 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
         L.intensity = lp.torchIntensity;                       // moderate: many torches can be lit at once
         L.radius = lp.torchRadius * t;
         L.isTorch = true;                                      // tunable from the Lighting window
-        // Shadows are reverted to the merge state (dormant): torches are LIGHT-only for now. The
-        // shadow cone direction is still computed, ready for when torch shadows are redone properly
-        // (see M2_shadows_plan.md).
-        L.castsShadow = false;
+        // A wall torch is a SPOT light: it casts a 2D cone shadow (Lorenzo's SPOT path). The renderer
+        // picks only the nearest MAX_SHADOW_LIGHTS casters each frame, so not every torch draws a map.
+        L.type = LIGHT_SPOT;
+        L.castsShadow = true;
         L.direction = glm::normalize(n + glm::vec3(0.0f, -lp.coneTilt, 0.0f));
         scene.lights.push_back(L);
     };
