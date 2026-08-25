@@ -6,8 +6,8 @@
 // before drawing.
 //
 // This is our own rewrite of the lab Shader class (which was based on LearnOpenGL).
-// We kept it minimal on purpose: only vertex + fragment shaders. If later we need a
-// geometry shader (for example for the point-light shadows in M2) we will add it here.
+// There's also an overload taking a geometry shader path (used by the point-light shadow
+// pass), see below.
 //
 // Difference from the lab version: this header includes glad by itself, so you do NOT
 // have to remember to include <glad/glad.h> before including this file.
@@ -66,6 +66,43 @@ public:
         glDeleteShader(fragment);
     }
 
+    // Same idea, with a geometry shader in the middle (vertex -> geometry -> fragment).
+    Shader(const char* vertexPath, const char* geometryPath, const char* fragmentPath) {
+        std::string vertexCode = readFile(vertexPath);
+        std::string geometryCode = readFile(geometryPath);
+        std::string fragmentCode = readFile(fragmentPath);
+
+        const char* vShaderCode = vertexCode.c_str();
+        const char* gShaderCode = geometryCode.c_str();
+        const char* fShaderCode = fragmentCode.c_str();
+
+        GLuint vertex = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vertex, 1, &vShaderCode, NULL);
+        glCompileShader(vertex);
+        checkCompileErrors(vertex, "VERTEX");
+
+        GLuint geometry = glCreateShader(GL_GEOMETRY_SHADER);
+        glShaderSource(geometry, 1, &gShaderCode, NULL);
+        glCompileShader(geometry);
+        checkCompileErrors(geometry, "GEOMETRY");
+
+        GLuint fragment = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fragment, 1, &fShaderCode, NULL);
+        glCompileShader(fragment);
+        checkCompileErrors(fragment, "FRAGMENT");
+
+        this->program = glCreateProgram();
+        glAttachShader(this->program, vertex);
+        glAttachShader(this->program, geometry);
+        glAttachShader(this->program, fragment);
+        glLinkProgram(this->program);
+        checkCompileErrors(this->program, "PROGRAM");
+
+        glDeleteShader(vertex);
+        glDeleteShader(geometry);
+        glDeleteShader(fragment);
+    }
+
     // Activate this program: from now on, the draw calls use these shaders.
     void use() {
         glUseProgram(this->program);
@@ -83,6 +120,9 @@ public:
     }
     void setFloat(const std::string& name, float value) {
         glUniform1f(glGetUniformLocation(this->program, name.c_str()), value);
+    }
+    void setVec2(const std::string& name, const glm::vec2& value) {
+        glUniform2fv(glGetUniformLocation(this->program, name.c_str()), 1, glm::value_ptr(value));
     }
     void setVec3(const std::string& name, const glm::vec3& value) {
         glUniform3fv(glGetUniformLocation(this->program, name.c_str()), 1, glm::value_ptr(value));

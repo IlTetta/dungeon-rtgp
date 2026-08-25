@@ -1,20 +1,17 @@
 // ggx.vert
 //
-// Vertex shader for GGX (Cook-Torrance) forward shading.
-// Compared to basic.vert, this one also needs the WORLD-space position and normal of
-// each fragment, because the GGX BRDF (computed per-fragment, in ggx.frag) needs the
-// view direction V and the light direction L at that point, and our lights/camera live
-// in world space.
+// Vertex shader for GGX (Cook-Torrance) forward shading. Outputs world-space position and
+// normal (lighting is done in world space) plus texture coordinates. The light-space
+// projection for shadows is done per-fragment now, in ggx.frag, not here.
 
 #version 410 core
 
-// Attribute locations must match the ones set up on the CPU side in Mesh::setupMesh()
-// (see src/engine/mesh.h): 0 = Position, 1 = Normal, 2 = TexCoords.
+// Attribute locations match Mesh::setupMesh() (src/engine/mesh.h).
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aTexCoords;
-// locations 3/4 (Tangent, Bitangent) are not used yet: they will matter once we add
-// normal mapping (a later milestone), not for GGX with per-object flat normals.
+layout (location = 3) in vec3 aTangent;     // not used yet (normal mapping)
+layout (location = 4) in vec3 aBitangent;   // not used yet
 
 uniform mat4 model;
 uniform mat4 view;
@@ -28,10 +25,8 @@ void main() {
     vec4 worldPos = model * vec4(aPos, 1.0);
     FragPos = worldPos.xyz;
 
-    // Normals need the "normal matrix" (transpose of the inverse of the upper-left 3x3
-    // of "model"), not "model" directly, otherwise a non-uniform scale would leave them
-    // not perpendicular to the surface anymore. It costs an inverse per vertex, which is
-    // fine for now; if it becomes a bottleneck we can precompute it on the CPU instead.
+    // Not mat3(model): walls/floors are scaled non-uniformly, so normals need the real
+    // inverse-transpose or they end up not perpendicular to the surface.
     mat3 normalMatrix = transpose(inverse(mat3(model)));
     Normal = normalize(normalMatrix * aNormal);
 

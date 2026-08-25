@@ -17,6 +17,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(dungeon
     src/main.cpp
     external/glad/glad.c
+    external/stb/stb_image_impl.cpp   # compiles the stb_image library implementation once
 
     # the renderer and the off-screen framebuffer are split into .h + .cpp (they are bigger
     # and more central than the header-only classes), so they get their own translation units
@@ -73,6 +74,12 @@ add_custom_command(TARGET dungeon POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_SOURCE_DIR}/shaders"
         "$<TARGET_FILE_DIR:dungeon>/shaders")
+
+# Same for the 3D model assets (loaded at run time with paths like "assets/models/bunny_lp.obj").
+add_custom_command(TARGET dungeon POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/assets"
+        "$<TARGET_FILE_DIR:dungeon>/assets")
 
 # Also set the VS debugger working directory to the project root (used when VS generates a normal
 # solution). Harmless when it is not applied, because of the copy above.
