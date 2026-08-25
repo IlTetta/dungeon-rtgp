@@ -128,9 +128,7 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
     auto rf = [&](float lo, float hi) { std::uniform_real_distribution<float> d(lo, hi); return d(rng); };
     auto ri = [&](int lo, int hi) { std::uniform_int_distribution<int> d(lo, hi); return d(rng); };
 
-    // Braziers are disabled for now (wall torches provide the room light + shadows), but kept
-    // loadable/commented in case we bring them back for ambiance later.
-    // PropAsset brazier = loadPropAsset(scene, "brazier", 0.5f);
+    PropAsset brazier = loadPropAsset(scene, "brazier", 0.5f);   // floor fire: warm POINT light + a body
     PropAsset torch   = loadPropAsset(scene, "torch",   0.55f);   // wall-mounted, iron; light source
     PropAsset column  = loadPropAsset(scene, "column",  0.8f);
     PropAsset statue  = loadPropAsset(scene, "statue",  0.6f);
@@ -166,18 +164,16 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
         return m;
     };
 
-    // addLight() was used only by the braziers (now disabled). Wall torches push their own Light
-    // directly (see placeWallTorches below). Kept commented so re-enabling braziers stays easy;
-    // when reinstated a brazier stays LIGHT_POINT (default) and gets a cubemap shadow:
-    // auto addLight = [&](float x, float y, float z) {
-    //     Light L;
-    //     L.position = glm::vec3(x, y, z);
-    //     L.color = glm::vec3(1.0f, 0.8f, 0.5f);
-    //     L.intensity = 3.5f;
-    //     L.radius = 10.0f * t;
-    //     L.castsShadow = true;   // LIGHT_POINT -> cubemap shadow (Lorenzo's POINT path)
-    //     scene.lights.push_back(L);
-    // };
+    // A brazier's fire: a warm POINT light (default LightType) that casts a cubemap shadow.
+    auto addLight = [&](float x, float y, float z) {
+        Light L;
+        L.position = glm::vec3(x, y, z);
+        L.color = glm::vec3(1.0f, 0.8f, 0.5f);
+        L.intensity = 3.5f;
+        L.radius = 10.0f * t;
+        L.castsShadow = true;   // LIGHT_POINT -> cubemap shadow (Lorenzo's POINT path)
+        scene.lights.push_back(L);
+    };
 
     // reserve a spot (add a footprint without checking) - for props placed at fixed positions
     auto reserve = [&](std::vector<Footprint>& occ, float x, float z, float radius) {
@@ -327,14 +323,16 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
             sm = glm::rotate(sm, yaw, glm::vec3(0.0f, 1.0f, 0.0f));
             addPropInstance(scene, statue, sm);
 
-            // Flanking braziers disabled for now (wall torches provide light/shadows). Kept for
-            // possible ambiance:
-            // for (int s = -1; s <= 1; s += 2) {
-            //     float bx = cx + s * 3.0f;
-            //     addPropInstance(scene, brazier, floorModel(brazier, bx, cz, 0.0f, 1.0f));
-            //     addLight(bx, 1.2f, cz);
-            //     reserve(occ, bx, cz, 0.7f);
-            // }
+            // flanking braziers (each a warm POINT light) beside the statue. MAT_DECOR: like the
+            // wall torches, a light source doesn't cast its own shadow (would self-shadow its base).
+            for (int s = -1; s <= 1; s += 2) {
+                float bx = cx + s * 3.0f;
+                addPropInstance(scene, brazier, floorModel(brazier, bx, cz, 0.0f, 1.0f), MAT_DECOR);
+                addLight(bx, 1.2f, cz);
+                reserve(occ, bx, cz, 0.7f);
+            }
+
+            // hanging chains
             for (int c = 0; c < 4; c++) {
                 glm::vec2 spot;
                 if (findSpot(occ, room, 0.4f, spot))
@@ -344,10 +342,10 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
         }
 
         // -------- normal room --------
-        // central brazier disabled for now (wall torches light the room; the room's base light
-        // still comes from dungeon_geometry). Kept for possible ambiance:
-        // addPropInstance(scene, brazier, floorModel(brazier, cx, cz, rf(0.0f, 6.28f), 1.0f));
-        reserve(occ, cx, cz, 0.7f);   // keep the room center clear (as if the brazier were there)
+        // central brazier: gives the room's base POINT light (from dungeon_geometry, at this spot) a
+        // visible body. MAT_DECOR so it doesn't self-shadow / block the player.
+        addPropInstance(scene, brazier, floorModel(brazier, cx, cz, rf(0.0f, 6.28f), 1.0f), MAT_DECOR);
+        reserve(occ, cx, cz, 0.7f);
 
         // colonnade along the two side walls of big rooms (fixed positions -> reserved)
         if (room.w >= 6 && room.h >= 6) {
@@ -361,17 +359,16 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
             }
         }
 
-        // big rooms: two extra braziers (with lights) - disabled for now (wall torches do the job),
-        // kept for possible ambiance:
-        // if (area >= 60) {
-        //     for (int b = 0; b < 2; b++) {
-        //         glm::vec2 spot;
-        //         if (findSpot(occ, room, 0.7f, spot)) {
-        //             addPropInstance(scene, brazier, floorModel(brazier, spot.x, spot.y, rf(0.0f, 6.28f), 1.0f));
-        //             addLight(spot.x, 1.2f, spot.y);
-        //         }
-        //     }
-        // }
+        // big rooms: two extra braziers (each a POINT light), in free spots
+        if (area >= 60) {
+            for (int b = 0; b < 2; b++) {
+                glm::vec2 spot;
+                if (findSpot(occ, room, 0.7f, spot)) {
+                    addPropInstance(scene, brazier, floorModel(brazier, spot.x, spot.y, rf(0.0f, 6.28f), 1.0f), MAT_DECOR);
+                    addLight(spot.x, 1.2f, spot.y);
+                }
+            }
+        }
 
         // barrels / crates / urns scattered (count grows with room size), no overlaps
         int nContainers = std::min(6, std::max(2, area / 12));
