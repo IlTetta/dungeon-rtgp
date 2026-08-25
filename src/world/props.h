@@ -220,9 +220,10 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
         L.intensity = lp.torchIntensity;                       // moderate: many torches can be lit at once
         L.radius = lp.torchRadius * t;
         L.isTorch = true;                                      // tunable from the Lighting window
-        // A wall torch is a SPOT light: it casts a 2D cone shadow (Lorenzo's SPOT path). The renderer
-        // picks only the nearest MAX_SHADOW_LIGHTS casters each frame, so not every torch draws a map.
-        L.type = LIGHT_SPOT;
+        // A torch flame radiates in ALL directions, so it's a POINT light with a cubemap shadow:
+        // that shadows the floor AND the walls (a single SPOT cone could only cover one of them).
+        // Costs 6 depth passes vs 1 for a SPOT, but the renderer only shadows the nearest few.
+        L.type = LIGHT_POINT;
         L.castsShadow = true;
         L.direction = glm::normalize(n + glm::vec3(0.0f, -lp.coneTilt, 0.0f));
         scene.lights.push_back(L);

@@ -10,6 +10,13 @@
 #include <string>         // std::to_string, used to build "lightPositions[i]" uniform names
 #include <vector>
 
+// Which materials cast shadows. Flat structural slabs (floors, ceilings) never cast a useful
+// shadow and only self-shadow into grazing-angle acne; wall torches (MAT_DECOR) sit right at
+// their own light, so their bracket would shadow the light that spawns them. None of these cast.
+static bool isShadowCaster(MaterialId m) {
+    return m != MAT_FLOOR && m != MAT_CEILING && m != MAT_DECOR;
+}
+
 Renderer::Renderer(const char* vertexPath, const char* fragmentPath)
     : shader(vertexPath, fragmentPath),
       fovDegrees(60.0f),
@@ -120,12 +127,13 @@ void Renderer::renderShadowPass(const Scene& scene, int slot, const glm::mat4& l
     glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO[slot]);
     glClear(GL_DEPTH_BUFFER_BIT);
 
-    // Cull FRONT faces during the depth pass (draw only back faces): the recorded depth ends
-    // up on the far side of the geometry instead of the near side, which pushes self-
-    // shadowing acne behind the surface instead of on top of it. Safe here because every
-    // current mesh (dungeon boxes, OBJ props) is closed/solid.
+    // Standard shadow mapping: render FRONT faces (cull back), so the recorded depth is the
+    // near side of each caster - keeps contact shadows tight under floor-standing props (front-
+    // face culling stored the far side, which leaked light under them / looked inverted on the
+    // grazing floor). Self-shadow acne is handled by the slope-scaled bias + normal offset in
+    // ggx.frag, and the worst offenders (flat floors/ceilings) are excluded from casting anyway.
     glEnable(GL_CULL_FACE);
-    glCullFace(GL_FRONT);
+    glCullFace(GL_BACK);
 
     shadowShader.use();
     shadowShader.setMat4("lightSpaceMatrix", lightSpaceMatrix);
@@ -135,6 +143,8 @@ void Renderer::renderShadowPass(const Scene& scene, int slot, const glm::mat4& l
     // correctness. This is also the main perf win once several shadow-casters are active.
     Frustum lightFrustum = extractFrustum(lightSpaceMatrix);
     for (const RenderObject& obj : scene.objects) {
+        if (!isShadowCaster(obj.material))   // floors/ceilings (self-shadow acne) and torches
+            continue;                        // (would self-shadow their own light) don't cast
         if (!isAABBVisible(lightFrustum, obj.worldBounds))
             continue;
         shadowShader.setMat4("model", obj.modelMatrix);
@@ -184,7 +194,7 @@ void Renderer::renderPointShadowPass(const Scene& scene, int slot, const Light& 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);   // clears all 6 layers at once
 
     glEnable(GL_CULL_FACE);
-    glCullFace(GL_FRONT);   // same acne fix as the SPOT pass
+    glCullFace(GL_BACK);   // front faces (see renderShadowPass): keeps contact shadows tight
 
     pointShadowShader.use();
     pointShadowShader.setVec3("lightPos", light.position);
@@ -194,6 +204,8 @@ void Renderer::renderPointShadowPass(const Scene& scene, int slot, const Light& 
     // one draw call per object (not 6) - the geometry shader fans each triangle out to every
     // face that needs it
     for (const RenderObject& obj : scene.objects) {
+        if (!isShadowCaster(obj.material))   // floors/ceilings/torches don't cast (see above)
+            continue;
         if (!aabbIntersectsSphere(obj.worldBounds, light.position, light.radius))
             continue;
         pointShadowShader.setMat4("model", obj.modelMatrix);
