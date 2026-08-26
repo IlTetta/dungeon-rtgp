@@ -73,6 +73,10 @@ cmake-build-*/
 # *.mp4
 
 # ---- Logs / benchmark output ----
+# The benchmark writes into benchmarks/. The CSV runs are throwaway (regenerated any time by
+# replaying a path), so we ignore them; the recorded walkthroughs (benchmarks/*_path.txt) ARE
+# committed, as the reproducible reference paths. "benchmark_*.csv" has no leading slash, so it
+# matches in benchmarks/ too.
 logs/
 *.log
 benchmark_*.csv
@@ -91,3 +95,4 @@ M2_notes.md
 content_notes.md
 tooling_notes.md
 M2_shadows_plan.md
+M3_notes.md

@@ -20,7 +20,7 @@ so Assimp is not used)
 - Ad-hoc player **collisions** and **Verlet chain physics** (swinging chains, no physics engine).
 
 ## Controls
-WASD move · mouse look · Shift sprint · **C** toggle culling · **TAB** free the cursor (use/move
+WASD move · mouse look · Shift sprint · **C** toggle culling · **F1** free the cursor (use/move
 the HUD) · ESC quit.
 
 ## Attribution

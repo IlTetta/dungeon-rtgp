@@ -33,6 +33,7 @@
 #include "world/debug_draw.h"        // DebugDraw: frustum wireframe for the spectator view
 #include "world/frustum_culling.h"   // extractFrustum / Frustum, to freeze the player frustum
 #include "render/renderer.h"
+#include "bench/benchmark.h"         // M3 benchmark harness: record/replay camera path + CSV log
 
 // Dear ImGui (performance HUD)
 #include "imgui.h"
@@ -49,9 +50,14 @@ const float PLAYER_RADIUS = 0.4f;
 // frustum culling on/off (toggled with the C key), to compare performance ON vs OFF
 bool cullingEnabled = true;
 
-// UI mode (toggled with TAB): the mouse cursor is released so we can interact with the ImGui HUD
-// (drag it, collapse it), and the camera stops turning. TAB again goes back to first-person.
+// UI mode (toggled with F1): the mouse cursor is released so we can interact with the ImGui HUD
+// (drag it, collapse it), and the camera stops turning. F1 again goes back to first-person.
 bool uiMode = false;
+
+// Set when we switch from HUD back to first-person, so the render loop can drop the keyboard
+// focus from any HUD widget (e.g. a text field) before movement keys are read. Cleared once
+// handled. (See the F1 handler and the SetWindowFocus call in the loop.)
+bool requestClearFocus = false;
 
 // debug spectator camera (toggled with V): we DRAW the scene from far above the player, while the
 // frustum culling keeps using the PLAYER frustum. This lets us watch, from outside, exactly what
@@ -77,11 +83,17 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
     // toggle the debug spectator camera (far, top-down view of the culling)
     if (key == GLFW_KEY_V && action == GLFW_PRESS)
         debugCamEnabled = !debugCamEnabled;
-    // TAB: toggle the mouse cursor free (to use the HUD) / captured (first-person look)
-    if (key == GLFW_KEY_TAB && action == GLFW_PRESS) {
+    // F1: toggle the mouse cursor free (to use the HUD) / captured (first-person look).
+    // We use F1 rather than TAB on purpose: TAB is ImGui's own "focus next field" key, so
+    // toggling with TAB would also move the keyboard focus into a HUD text box (and then WASD
+    // would be typed into it instead of moving the camera). F1 never touches the HUD widgets.
+    if (key == GLFW_KEY_F1 && action == GLFW_PRESS) {
         uiMode = !uiMode;
         glfwSetInputMode(window, GLFW_CURSOR, uiMode ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
         firstMouse = true;   // avoid a camera jump when going back to first-person
+        // going back to first-person: ask the loop to drop the focus from any HUD widget that
+        // still holds it, so movement keys reach the game and not a text field.
+        if (!uiMode) requestClearFocus = true;
     }
     if (key >= 0 && key < 1024) {
         if (action == GLFW_PRESS)   keys[key] = true;
@@ -160,6 +172,18 @@ int main() {
     bool  showFrustumWire = true;     // draw the yellow frustum cage in the spectator view
     bool  debugCamFollowYaw = true;   // chase cam (follows where the player looks) vs fixed north-up
 
+    // --- benchmark harness (M3): record/replay a fixed camera path + log metrics to CSV ---
+    BenchmarkHarness bench;
+    char benchPathFile[128] = "benchmarks/bench_path.txt";   // file used by the Save/Load buttons
+    std::string benchStatus;   // last Save/Load/Replay result, shown in the panel (empty = nothing yet)
+
+    // VSync: ON by default, so normal walking around does not spin the GPU at max. Turn it OFF
+    // (checkbox in the Benchmark panel) BEFORE measuring: with VSync the frame rate is capped to
+    // the monitor refresh, which hides the true per-frame cost the benchmark is meant to reveal.
+    // The context is already current here (created above), so glfwSwapInterval is valid.
+    bool vsyncEnabled = true;
+    glfwSwapInterval(1);
+
     // --- init Dear ImGui (for the performance HUD) ---
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -178,9 +202,16 @@ int main() {
         lastFrame = currentFrame;
 
         glfwPollEvents();
-        applyMovements();
-        // push the player out of any wall it tried to walk into
-        camera.Position = resolveWallCollisions(camera.Position, PLAYER_RADIUS, scene);
+
+        // Benchmark: in replay the camera pose comes from the recorded path, so we skip the
+        // normal input + wall-collision step for this frame; otherwise play normally. beginFrame
+        // sets the camera pose (in replay) and stops the replay when the path is over.
+        bench.beginFrame(camera, deltaTime);
+        if (!bench.drivingCamera()) {
+            applyMovements();
+            // push the player out of any wall it tried to walk into
+            camera.Position = resolveWallCollisions(camera.Position, PLAYER_RADIUS, scene);
+        }
 
         // advance the swinging chains (Verlet) and write their transforms back into the scene
         chainSystem.update(deltaTime, camera.Position, PLAYER_RADIUS, scene);
@@ -189,6 +220,15 @@ int main() {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+
+        // If we just returned to first-person (F1), remove the keyboard focus from any HUD widget.
+        // SetWindowFocus(NULL) unfocuses every window AND clears the active text field (see
+        // FocusWindow in imgui.cpp), so WASD go to the camera and are not typed into a HUD box.
+        // Must run inside a frame, i.e. after NewFrame(), so we do it here.
+        if (requestClearFocus) {
+            ImGui::SetWindowFocus(NULL);
+            requestClearFocus = false;
+        }
 
         // push the live torch tuning (brightness / reach / color) into the scene lights each frame,
         // so the "Lighting" window sliders are visible immediately without a rebuild
@@ -230,6 +270,10 @@ int main() {
         // the two metrics that main is responsible for
         metrics.fps = ImGui::GetIO().Framerate;
         metrics.frameTimeMs = deltaTime * 1000.0f;
+
+        // Benchmark: record a keyframe (if recording) or log this frame's metrics (if replaying).
+        // Called here, after metrics.fps is filled, so the CSV row is complete.
+        bench.endFrame(camera, metrics, deltaTime);
 
         // --- HUD window ---
         ImGui::Begin("Performance");
@@ -300,7 +344,7 @@ int main() {
         }
 
         ImGui::Separator();
-        ImGui::TextDisabled("TAB cursor - C culling - V debug cam - WASD move - Shift sprint - ESC quit");
+        ImGui::TextDisabled("F1 cursor - C culling - V debug cam - WASD move - Shift sprint - ESC quit");
         ImGui::End();
 
         // --- Lighting / torches tuning (separate window) ---
@@ -320,6 +364,85 @@ int main() {
         if (ImGui::Button("Regenerate with these")) {
             buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
             firstMouse = true;   // camera teleported: avoid a mouse-look jump next frame
+        }
+        ImGui::End();
+
+        // --- Benchmark harness (record/replay a fixed camera path + CSV logging) ---
+        // Record a walkthrough, Save/Load it to a file, then Replay it: the replay drives the
+        // camera along the exact same path while logging the per-frame metrics to a CSV. Replaying
+        // the same path under different settings (culling ON/OFF, ...) is how we get comparable
+        // measurements. NB: for real numbers use a Release build and keep VSync off.
+        ImGui::Begin("Benchmark");
+        ImGui::Text("Mode: %s", bench.modeName());
+        ImGui::Text("Path: %d keyframes  (%.1f s)  seed %u",
+                    bench.path().size(), bench.path().durationMs() / 1000.0f, bench.path().seed);
+        if (bench.mode() == BenchmarkHarness::REPLAYING)
+            ImGui::Text("Replay: %.1f / %.1f s",
+                        bench.replayTimeMs() / 1000.0f, bench.path().durationMs() / 1000.0f);
+
+        // VSync toggle. Checkbox returns true only on the frame the value changes, so we call
+        // glfwSwapInterval only then (0 = uncapped, for benchmarking; 1 = capped to refresh).
+        if (ImGui::Checkbox("VSync", &vsyncEnabled))
+            glfwSwapInterval(vsyncEnabled ? 1 : 0);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(turn OFF to benchmark)");
+        // loud reminder if we are actually replaying+logging with the frame rate still capped
+        if (bench.mode() == BenchmarkHarness::REPLAYING && vsyncEnabled)
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "VSync ON: frame rate is capped!");
+
+        ImGui::InputText("Path file", benchPathFile, sizeof(benchPathFile));
+
+        if (bench.mode() == BenchmarkHarness::IDLE) {
+            // record on the CURRENT seed (stored inside the path)
+            if (ImGui::Button("Record")) bench.beginRecord(dungeonSeed);
+            ImGui::SameLine();
+            // Save / Load report their result in benchStatus, so it is obvious the click did
+            // something. The file is written relative to the working directory (with the VS
+            // "Open Folder" flow that is the build output folder, e.g. out/build/x64-Debug/).
+            if (ImGui::Button("Save")) {
+                bool ok = bench.savePath(benchPathFile);
+                benchStatus = ok ? ("Saved " + std::to_string(bench.path().size())
+                                    + " keyframes -> " + std::string(benchPathFile))
+                                 : ("SAVE FAILED -> " + std::string(benchPathFile));
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Load")) {
+                bool ok = bench.loadPath(benchPathFile);
+                benchStatus = ok ? ("Loaded " + std::to_string(bench.path().size())
+                                    + " keyframes (seed " + std::to_string(bench.path().seed)
+                                    + ") <- " + std::string(benchPathFile))
+                                 : ("LOAD FAILED (file not found?) <- " + std::string(benchPathFile));
+            }
+
+            if (ImGui::Button("Replay + log CSV")) {
+                // A path only makes sense on the dungeon it was recorded on: if the (loaded) path
+                // has a different seed, regenerate that exact dungeon first.
+                if (bench.path().seed != dungeonSeed) {
+                    dungeonSeed = bench.path().seed;
+                    buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
+                    firstMouse = true;
+                }
+                // The CSV name encodes the configuration under test, so files from different
+                // experiments do not overwrite each other (and "benchmark_*.csv" is git-ignored).
+                // It goes under benchmarks/ (the harness creates the folder if missing).
+                std::string csv = "benchmarks/benchmark_seed" + std::to_string(dungeonSeed)
+                                + (cullingEnabled ? "_cullON" : "_cullOFF") + ".csv";
+                bool ok = bench.beginReplay(csv, dungeonSeed, cullingEnabled, Renderer::MAX_SHADOW_LIGHTS);
+                benchStatus = ok ? ("Replaying, logging -> " + csv)
+                                 : "REPLAY FAILED (empty path, or CSV could not be opened)";
+            }
+        }
+        else if (bench.mode() == BenchmarkHarness::RECORDING) {
+            if (ImGui::Button("Stop recording")) bench.stopRecord();
+        }
+        else {   // REPLAYING
+            if (ImGui::Button("Stop replay")) bench.stopReplay();
+        }
+
+        // last Save/Load/Replay result (with the absolute path), so it is clear what happened
+        if (!benchStatus.empty()) {
+            ImGui::Separator();
+            ImGui::TextWrapped("%s", benchStatus.c_str());
         }
         ImGui::End();
 
