@@ -34,6 +34,7 @@
 #include "world/frustum_culling.h"   // extractFrustum / Frustum, to freeze the player frustum
 #include "render/renderer.h"
 #include "bench/benchmark.h"         // M3 benchmark harness: record/replay camera path + CSV log
+#include "bench/experiment.h"        // M3 experiment automation: replay one path once per config
 
 // Dear ImGui (performance HUD)
 #include "imgui.h"
@@ -184,6 +185,13 @@ int main() {
     bool vsyncEnabled = true;
     glfwSwapInterval(1);
 
+    // --- experiment automation (M3): replay the loaded path once per configuration, unattended ---
+    ExperimentRunner experiments;
+    bool sweepSSAO = false;               // if set, the batch also toggles SSAO (culling x SSAO)
+    bool experimentsWereRunning = false;  // edge-detect the end of a batch, to restore the settings
+    bool savedCulling = cullingEnabled;   // user settings captured at batch start, restored after
+    bool savedSsao = false;               // (set from renderer.tuning when the batch starts)
+
     // --- init Dear ImGui (for the performance HUD) ---
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -202,6 +210,22 @@ int main() {
         lastFrame = currentFrame;
 
         glfwPollEvents();
+
+        // Experiment automation: advance the batch (this starts each config's replay and moves to
+        // the next one when a replay finishes). While a batch runs we force this config's knobs
+        // (culling / SSAO) into the app every frame; when the batch ends we restore the settings
+        // the user had before it started.
+        experiments.update(bench);
+        if (experiments.running()) {
+            cullingEnabled = experiments.currentConfig().culling;
+            renderer.tuning.ssaoEnabled = experiments.currentConfig().ssao;
+        }
+        else if (experimentsWereRunning) {   // the batch just ended this frame
+            cullingEnabled = savedCulling;
+            renderer.tuning.ssaoEnabled = savedSsao;
+            benchStatus = "Experiments finished - see benchmarks/benchmark_*.csv";
+        }
+        experimentsWereRunning = experiments.running();
 
         // Benchmark: in replay the camera pose comes from the recorded path, so we skip the
         // normal input + wall-collision step for this frame; otherwise play normally. beginFrame
@@ -390,53 +414,101 @@ int main() {
         if (bench.mode() == BenchmarkHarness::REPLAYING && vsyncEnabled)
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "VSync ON: frame rate is capped!");
 
-        ImGui::InputText("Path file", benchPathFile, sizeof(benchPathFile));
+        if (experiments.running()) {
+            // A batch is running: show progress and hide the manual controls (the harness mode
+            // flickers REPLAYING/idle between runs, so we don't want the manual buttons here).
+            ImGui::Separator();
+            ImGui::Text("Experiment %d/%d: %s", experiments.currentIndex() + 1,
+                        experiments.count(), experiments.currentConfig().name.c_str());
+            if (ImGui::Button("Stop experiments")) experiments.stop(bench);
+        }
+        else {
+            ImGui::InputText("Path file", benchPathFile, sizeof(benchPathFile));
 
-        if (bench.mode() == BenchmarkHarness::IDLE) {
-            // record on the CURRENT seed (stored inside the path)
-            if (ImGui::Button("Record")) bench.beginRecord(dungeonSeed);
-            ImGui::SameLine();
-            // Save / Load report their result in benchStatus, so it is obvious the click did
-            // something. The file is written relative to the working directory (with the VS
-            // "Open Folder" flow that is the build output folder, e.g. out/build/x64-Debug/).
-            if (ImGui::Button("Save")) {
-                bool ok = bench.savePath(benchPathFile);
-                benchStatus = ok ? ("Saved " + std::to_string(bench.path().size())
-                                    + " keyframes -> " + std::string(benchPathFile))
-                                 : ("SAVE FAILED -> " + std::string(benchPathFile));
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Load")) {
-                bool ok = bench.loadPath(benchPathFile);
-                benchStatus = ok ? ("Loaded " + std::to_string(bench.path().size())
-                                    + " keyframes (seed " + std::to_string(bench.path().seed)
-                                    + ") <- " + std::string(benchPathFile))
-                                 : ("LOAD FAILED (file not found?) <- " + std::string(benchPathFile));
-            }
-
-            if (ImGui::Button("Replay + log CSV")) {
-                // A path only makes sense on the dungeon it was recorded on: if the (loaded) path
-                // has a different seed, regenerate that exact dungeon first.
-                if (bench.path().seed != dungeonSeed) {
-                    dungeonSeed = bench.path().seed;
-                    buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
-                    firstMouse = true;
+            if (bench.mode() == BenchmarkHarness::IDLE) {
+                // record on the CURRENT seed (stored inside the path)
+                if (ImGui::Button("Record")) bench.beginRecord(dungeonSeed);
+                ImGui::SameLine();
+                // Save / Load report their result in benchStatus, so it is obvious the click did
+                // something. The file is written relative to the working directory (with the VS
+                // "Open Folder" flow that is the build output folder, e.g. out/build/x64-Debug/).
+                if (ImGui::Button("Save")) {
+                    bool ok = bench.savePath(benchPathFile);
+                    benchStatus = ok ? ("Saved " + std::to_string(bench.path().size())
+                                        + " keyframes -> " + std::string(benchPathFile))
+                                     : ("SAVE FAILED -> " + std::string(benchPathFile));
                 }
-                // The CSV name encodes the configuration under test, so files from different
-                // experiments do not overwrite each other (and "benchmark_*.csv" is git-ignored).
-                // It goes under benchmarks/ (the harness creates the folder if missing).
-                std::string csv = "benchmarks/benchmark_seed" + std::to_string(dungeonSeed)
-                                + (cullingEnabled ? "_cullON" : "_cullOFF") + ".csv";
-                bool ok = bench.beginReplay(csv, dungeonSeed, cullingEnabled, Renderer::MAX_SHADOW_LIGHTS);
-                benchStatus = ok ? ("Replaying, logging -> " + csv)
-                                 : "REPLAY FAILED (empty path, or CSV could not be opened)";
+                ImGui::SameLine();
+                if (ImGui::Button("Load")) {
+                    bool ok = bench.loadPath(benchPathFile);
+                    benchStatus = ok ? ("Loaded " + std::to_string(bench.path().size())
+                                        + " keyframes (seed " + std::to_string(bench.path().seed)
+                                        + ") <- " + std::string(benchPathFile))
+                                     : ("LOAD FAILED (file not found?) <- " + std::string(benchPathFile));
+                }
+
+                if (ImGui::Button("Replay + log CSV")) {
+                    // A path only makes sense on the dungeon it was recorded on: if the (loaded)
+                    // path has a different seed, regenerate that exact dungeon first.
+                    if (bench.path().seed != dungeonSeed) {
+                        dungeonSeed = bench.path().seed;
+                        buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
+                        firstMouse = true;
+                    }
+                    // The CSV name encodes the configuration under test, so files from different
+                    // experiments do not overwrite each other ("benchmark_*.csv" is git-ignored).
+                    // It goes under benchmarks/ (the harness creates the folder if missing).
+                    std::string csv = "benchmarks/benchmark_seed" + std::to_string(dungeonSeed)
+                                    + (cullingEnabled ? "_cullON" : "_cullOFF") + ".csv";
+                    bool ok = bench.beginReplay(csv, dungeonSeed, cullingEnabled, Renderer::MAX_SHADOW_LIGHTS);
+                    benchStatus = ok ? ("Replaying, logging -> " + csv)
+                                     : "REPLAY FAILED (empty path, or CSV could not be opened)";
+                }
+
+                // --- automated experiment sweep ---
+                // Replay the SAME path once per configuration and log a CSV each, unattended. The
+                // core experiment is culling ON vs OFF (everything else equal); optionally we also
+                // cross it with SSAO on/off (a 2x2 matrix). The path is the only thing kept fixed.
+                ImGui::Separator();
+                ImGui::Checkbox("Also sweep SSAO on/off (2x2)", &sweepSSAO);
+                if (ImGui::Button("Run experiments")) {
+                    // same dungeon as the path, exactly (regenerate if the seed differs)
+                    if (bench.path().seed != dungeonSeed) {
+                        dungeonSeed = bench.path().seed;
+                        buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
+                        firstMouse = true;
+                    }
+                    // remember the user's settings so we can restore them after the batch
+                    savedCulling = cullingEnabled;
+                    savedSsao = renderer.tuning.ssaoEnabled;
+                    // build the config list: culling ON/OFF, optionally crossed with SSAO on/off.
+                    // When SSAO is not swept, keep it at the user's current value in both runs, so
+                    // the culling comparison is fair (everything else equal).
+                    experiments.configs.clear();
+                    if (sweepSSAO) {
+                        experiments.configs.push_back({ "cullON_ssaoON",   true,  true  });
+                        experiments.configs.push_back({ "cullOFF_ssaoON",  false, true  });
+                        experiments.configs.push_back({ "cullON_ssaoOFF",  true,  false });
+                        experiments.configs.push_back({ "cullOFF_ssaoOFF", false, false });
+                    } else {
+                        experiments.configs.push_back({ "cullON",  true,  savedSsao });
+                        experiments.configs.push_back({ "cullOFF", false, savedSsao });
+                    }
+                    experiments.start(bench, dungeonSeed, Renderer::MAX_SHADOW_LIGHTS);
+                    benchStatus = experiments.running()
+                        ? ("Running " + std::to_string(experiments.count()) + " experiments (path = "
+                           + std::to_string(bench.path().size()) + " keyframes)...")
+                        : "Cannot run experiments: record or load a path first";
+                }
+                if (bench.path().empty())
+                    ImGui::TextDisabled("(record or load a path first)");
             }
-        }
-        else if (bench.mode() == BenchmarkHarness::RECORDING) {
-            if (ImGui::Button("Stop recording")) bench.stopRecord();
-        }
-        else {   // REPLAYING
-            if (ImGui::Button("Stop replay")) bench.stopReplay();
+            else if (bench.mode() == BenchmarkHarness::RECORDING) {
+                if (ImGui::Button("Stop recording")) bench.stopRecord();
+            }
+            else {   // REPLAYING (manual)
+                if (ImGui::Button("Stop replay")) bench.stopReplay();
+            }
         }
 
         // last Save/Load/Replay result (with the absolute path), so it is clear what happened
