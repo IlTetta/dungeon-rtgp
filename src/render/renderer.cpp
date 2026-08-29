@@ -25,7 +25,9 @@ Renderer::Renderer(const char* vertexPath, const char* fragmentPath)
       pointShadowShader("shaders/pointshadow.vert", "shaders/pointshadow.geom", "shaders/pointshadow.frag"),
       gBufferShader("shaders/gbuffer.vert", "shaders/gbuffer.frag"),
       ssaoShader("shaders/fullscreen.vert", "shaders/ssao.frag"),
-      ssaoBlurShader("shaders/fullscreen.vert", "shaders/ssaoblur.frag")
+      ssaoBlurShader("shaders/fullscreen.vert", "shaders/ssaoblur.frag"),
+      sceneFBO(1280, 720, /*wantColor*/true, /*wantDepth*/true),
+      fogShader("shaders/fullscreen.vert", "shaders/fog.frag")
 {
     glEnable(GL_DEPTH_TEST);
     projection = glm::mat4(1.0f);
@@ -412,9 +414,18 @@ void Renderer::setViewport(int width, int height) {
     // plane (e.g. 100) would clip distant geometry.
     projection = glm::perspective(glm::radians(fovDegrees), aspect, 0.1f, 500.0f);
 
-    // the G-buffer/SSAO textures must be exactly screen-sized (unlike the shadow maps).
-    if (width > 0 && height > 0)
+    // the G-buffer/SSAO/scene textures must be exactly screen-sized (unlike the shadow maps).
+    if (width > 0 && height > 0) {
         resizeSSAO(width, height);
+        sceneFBO.resize(width, height);
+    }
+}
+
+void Renderer::resetLightFades() {
+    shadowWeight.clear();
+    lightWeight.clear();
+    // renderInternal() re-fills both to all-0 on the next frame, the moment it sees their size
+    // no longer matches scene.lights.size() (0 never matches a non-empty scene).
 }
 
 void Renderer::render(const Scene& scene, Camera& camera, FrameMetrics& metrics) {
@@ -447,15 +458,39 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     glm::mat4 lightSpaceMatrices[MAX_SHADOW_LIGHTS];   // SPOT slots only
     int numShadowLights = 0;
 
-    // keep shadowWeight in sync with the scene - a dungeon regenerate can change how many
-    // lights exist, in which case there's no "old" fade to continue, starting at 0 is correct.
+    // keep shadowWeight/lightWeight in sync with the scene - a dungeon regenerate can change
+    // how many lights exist, in which case there's no "old" fade to continue. Starting at 1.0,
+    // not 0: a freshly (re)generated scene isn't transitioning FROM anything, so every light
+    // should just appear lit immediately, same as before this fade system existed. Starting at
+    // 0 made every light in the dungeon take a full lightFadeSeconds/shadowFadeSeconds (0.8s)
+    // to visibly warm up after every launch and every Regenerate - exactly backwards, since the
+    // fade is meant to hide a light LOSING its slot mid-game, not to delay a light gaining one
+    // for the first time.
     if (shadowWeight.size() != scene.lights.size())
-        shadowWeight.assign(scene.lights.size(), 0.0f);
+        shadowWeight.assign(scene.lights.size(), 1.0f);
+    if (lightWeight.size() != scene.lights.size())
+        lightWeight.assign(scene.lights.size(), 1.0f);
 
     float now = (float)glfwGetTime();
     float dt = (lastFrameTime < 0.0f) ? 0.0f : (now - lastFrameTime);   // first frame: no fade yet
+    // Clamp dt before it drives any fade step below. Entering a room can make several new
+    // POINT lights become shadow-casters in the same frame (6 depth passes each), which can
+    // spike that one frame's real duration well above the usual ~16-45ms - and an uncapped dt
+    // turns fadeStep = dt/fadeSeconds into a huge jump for exactly that frame, i.e. the whole
+    // 1.2s fade completing in one step. Capping dt to a "normal-ish" frame keeps the fade
+    // spread over several frames even right after a stall, instead of catching up all at once.
+    dt = std::min(dt, 1.0f / 15.0f);
     lastFrameTime = now;
 
+    // Tried ranking by "in the view frustum" ahead of "merely closer" here (same AABB-vs-
+    // frustum test as object culling, fed the light's position as a zero-size box). Reverted:
+    // it meant standing PERFECTLY STILL and just turning your head could reshuffle the whole
+    // budget and fade lights in/out, which is worse than the problem it fixed - a light's
+    // position does not change when you turn on the spot, so a physically-plausible dungeon
+    // should not either. Distance-only, as before: a torch that ends up two rooms behind you
+    // genuinely leaving the light's live-shadow budget (this is a real, honest limit of a
+    // fixed-size real-time budget, not a bug) is a far smaller sin than lighting depending on
+    // which way you happen to be facing while not moving at all.
     std::vector<int> shadowCandidates;
     for (size_t i = 0; i < scene.lights.size(); ++i) {
         if (scene.lights[i].castsShadow) shadowCandidates.push_back((int)i);
@@ -543,7 +578,9 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     // whether ggx.frag actually multiplies by it.
     renderSSAO(scene, view, cullFrustum);
 
-    // --- 1. clear the screen ---
+    // --- 1. clear the scene FBO (not the screen directly - the fog pass composites this
+    // onto the screen afterward, it needs the color AND depth back) ---
+    sceneFBO.bind();
     glClearColor(0.05f, 0.05f, 0.08f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -563,12 +600,13 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     shader.setFloat("pointPCFRadius", tuning.pointPCFRadius);
 
     // Which lights actually get a uniform slot and shade the scene at all - up to MAX_LIGHTS,
-    // nearest to `eye` first, not just the first ones in Scene::lights. A light that doesn't
-    // get a slot contributes nothing at all (unlike one that just has no shadow), which is
-    // what made corridors/far rooms go dark with more lights than MAX_LIGHTS. The shadow-
-    // casters chosen above are placed first in this list on purpose - a shadow-casting light
-    // that wasn't shaded would be pointless - everything else is filled with the nearest
-    // remaining lights.
+    // nearest to `eye` first (distance only - see the note above the shadow-caster sort on why
+    // view direction is deliberately NOT a factor here), not just the first ones in
+    // Scene::lights. A light that doesn't get a slot contributes nothing at all (unlike one
+    // that just has no shadow), which is what made corridors/far rooms go dark with more
+    // lights than MAX_LIGHTS. The shadow-casters chosen above are placed first in this list on
+    // purpose - a shadow-casting light that wasn't shaded would be pointless - everything else
+    // is filled with the nearest remaining lights.
     std::vector<int> shadeCandidates;
     shadeCandidates.reserve(scene.lights.size());
     for (size_t i = 0; i < scene.lights.size(); ++i) shadeCandidates.push_back((int)i);
@@ -578,45 +616,149 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         return glm::dot(da, da) < glm::dot(db, db);
     });
 
+    // Everything not already forced in as a shadow-caster, still nearest-first (shadeCandidates
+    // already is, so filtering keeps that order).
+    std::vector<int> nonShadowCandidates;
+    nonShadowCandidates.reserve(shadeCandidates.size());
+    for (int idx : shadeCandidates) {
+        bool isForced = false;
+        for (int k = 0; k < numShadowLights; ++k)
+            if (shadowLightIndex[k] == idx) { isForced = true; break; }
+        if (!isForced) nonShadowCandidates.push_back(idx);
+    }
+
+    int lightBudget = MAX_LIGHTS - numShadowLights;
+
+    // "D": nearest-budget candidates, with the same margin-hysteresis trick as the shadow-
+    // caster selection, so a light near the cutoff doesn't flip in/out every frame.
+    std::vector<int> lightD(nonShadowCandidates.begin(),
+        nonShadowCandidates.begin() + std::min((size_t)lightBudget, nonShadowCandidates.size()));
+
+    if ((int)nonShadowCandidates.size() > lightBudget && !lightD.empty()) {
+        glm::vec3 dCutoff = scene.lights[lightD.back()].position - eye;
+        float cutoffDist2 = glm::dot(dCutoff, dCutoff);
+        float marginDist2 = cutoffDist2 * tuning.lightHysteresisMargin * tuning.lightHysteresisMargin;
+
+        for (size_t i = lightBudget; i < nonShadowCandidates.size(); ++i) {
+            int cand = nonShadowCandidates[i];
+            if (lightWeight[cand] <= 0.0f) continue;
+            glm::vec3 d = scene.lights[cand].position - eye;
+            if (glm::dot(d, d) > marginDist2) continue;
+
+            int victimPos = -1;
+            float victimDist2 = -1.0f;
+            for (size_t k = 0; k < lightD.size(); ++k) {
+                if (lightWeight[lightD[k]] > 0.0f) continue;
+                glm::vec3 dv = scene.lights[lightD[k]].position - eye;
+                float dv2 = glm::dot(dv, dv);
+                if (dv2 > victimDist2) { victimDist2 = dv2; victimPos = (int)k; }
+            }
+            if (victimPos >= 0) lightD[victimPos] = cand;
+        }
+    }
+
+    // Gotcha: a light dropped from "D" the instant it's no longer near enough would still pop,
+    // because a light only fades visibly while it HAS a uniform slot - ramping lightWeight
+    // toward 0 in C++ does nothing once the light has no slot to put that value into. So any
+    // light still mid-fade (lightWeight > 0) that isn't in D keeps ITS slot until the fade
+    // actually finishes; a newly-nearest light only takes a slot once one frees up (imperceptible
+    // delay at ~0.3s fades). This mirrors the shadow-caster pattern above, plus this extra step.
+    std::vector<int> stillFading;
+    for (int idx : nonShadowCandidates) {
+        if (lightWeight[idx] <= 0.0f) continue;
+        if (std::find(lightD.begin(), lightD.end(), idx) != lightD.end()) continue;
+        stillFading.push_back(idx);
+    }
+    if ((int)stillFading.size() > lightBudget)
+        stillFading.resize(lightBudget);   // rare overflow: keep the nearest still-fading ones
+
+    std::vector<int> chosenLights = stillFading;
+    for (int idx : lightD) {
+        if ((int)chosenLights.size() >= lightBudget) break;
+        chosenLights.push_back(idx);
+    }
+
     int shadeLightIndex[MAX_LIGHTS];
     int lightCount = 0;
-    for (int slot = 0; slot < numShadowLights && lightCount < MAX_LIGHTS; ++slot)
+    for (int slot = 0; slot < numShadowLights; ++slot)
         shadeLightIndex[lightCount++] = shadowLightIndex[slot];
-    for (int idx : shadeCandidates) {
-        if (lightCount >= MAX_LIGHTS) break;
-        bool alreadyPicked = false;
-        for (int k = 0; k < numShadowLights; ++k)
-            if (shadowLightIndex[k] == idx) { alreadyPicked = true; break; }
-        if (!alreadyPicked) shadeLightIndex[lightCount++] = idx;
-    }
+    for (int idx : chosenLights)
+        shadeLightIndex[lightCount++] = idx;
     metrics.activeLights = lightCount;
 
+    // ramp lightWeight toward 1 for everything that got a slot this frame, toward 0 for every
+    // other non-shadow-forced light - same fade-in/fade-out shape as shadowWeight above.
+    float lightFadeStep = (tuning.lightFadeSeconds > 0.0f) ? (dt / tuning.lightFadeSeconds) : 1.0f;
+    for (int idx : nonShadowCandidates) {
+        bool active = std::find(chosenLights.begin(), chosenLights.end(), idx) != chosenLights.end();
+        float target = active ? 1.0f : 0.0f;
+        if (target > lightWeight[idx])
+            lightWeight[idx] = std::min(target, lightWeight[idx] + lightFadeStep);
+        else
+            lightWeight[idx] = std::max(target, lightWeight[idx] - lightFadeStep);
+    }
+    // A light that IS a forced shadow-caster right now is missing from nonShadowCandidates
+    // above, so without this its lightWeight would never move and would go stale (commonly
+    // stuck at its initial 0, if it has been a shadow-caster since the light first came into
+    // range and so never once got ramped as a "regular" shaded light). Its own brightness this
+    // frame bypasses lightWeight entirely (hasShadow -> lw = 1.0 below), which hid the problem
+    // right up until the moment a closer light takes its shadow slot away: hasShadow flips to
+    // false and lw suddenly reads that stale value - an instant drop from full brightness to
+    // whatever was frozen in there, THEN a fresh 0.8s climb back up. Keeping it ramped toward 1
+    // the whole time it holds a forced slot means there is nothing stale left to fall back to.
+    for (int idx : chosen)
+        lightWeight[idx] = std::min(1.0f, lightWeight[idx] + lightFadeStep);
+
     // Torches flicker over time instead of being static: a sum of two sines at different
-    // frequencies (less mechanical than one), phase-shifted per light index so they don't
-    // pulse in sync. A pure function of elapsed time, so it stays repeatable for a benchmark
-    // run; only the intensity SENT to the shader is animated, scene.lights[i].intensity
-    // itself is never modified. Reuses `now` from the fade timer above.
+    // frequencies (less mechanical than one), phase-shifted per light so they don't pulse in
+    // sync. A pure function of elapsed time, so it stays repeatable for a benchmark run; only
+    // the intensity SENT to the shader is animated, scene.lights[i].intensity itself is never
+    // modified. Reuses `now` from the fade timer above.
+    //
+    // The phase MUST be seeded from the light's own scene.lights index (shadeLightIndex[i]),
+    // not from its slot position i: shadeLightIndex is re-sorted by distance every frame, so
+    // two lights that are both already fully active and not fading at all can still swap
+    // slots the instant their relative distance to the camera flips (which happens
+    // constantly while walking near several torches). Seeding by slot meant that swap alone
+    // changed which phase each light used - an instant jump in its flicker term (up to
+    // ~30% of its brightness) with no fade involved at all, so lengthening the pop-in fade
+    // above did nothing for it. Seeding by the light's own index makes the phase travel WITH
+    // the light regardless of which slot it lands in.
     float t = now;
+
+    // Also kept per-light (not just sent to the shader): the fog pass reuses these exact
+    // already-flickered, already-faded values below, instead of recomputing its own from a
+    // second, independent light selection (see the "gotcha" note on renderFog's declaration).
+    float shadeIntensity[MAX_LIGHTS];
 
     shader.setInt("numLights", lightCount);
     for (int i = 0; i < lightCount; ++i) {
         const Light& light = scene.lights[shadeLightIndex[i]];
         std::string idx = "[" + std::to_string(i) + "]";
 
-        float seed = (float)i * 12.9898f;   // arbitrary per-light phase offset
-        float flicker = 0.85f
-                       + 0.10f * sin(t * 6.0f  + seed)
-                       + 0.05f * sin(t * 17.0f + seed * 2.3f);
-        flicker = glm::clamp(flicker, 0.6f, 1.15f);   // never fully dark, never a huge spike
+        // Toned down after playtesting felt it too jumpy: half the amplitude and roughly half
+        // the frequency of the original pass, so the flame reads as a slow, gentle waver
+        // instead of a nervous flicker (and halves how big a jump ANY discontinuity here -
+        // e.g. a slot swap - could still produce, on top of it being rarer already).
+        float seed = (float)shadeLightIndex[i] * 12.9898f;   // arbitrary per-light phase offset
+        float flicker = 0.94f
+                       + 0.05f * sin(t * 3.0f + seed)
+                       + 0.02f * sin(t * 8.0f + seed * 2.3f);
+        flicker = glm::clamp(flicker, 0.85f, 1.05f);   // never fully dark, never a huge spike
+
+        // shadow-casters are placed first in shadeLightIndex above, so the i-th shaded light
+        // IS shadow slot i whenever i < numShadowLights - no lookup needed. Forced (shadow-
+        // casting) lights are always fully weighted; everyone else uses its ramped lightWeight,
+        // so a light fades in/out instead of popping when it gains/loses its shading slot.
+        bool hasShadow = (i < numShadowLights);
+        float lw = hasShadow ? 1.0f : lightWeight[shadeLightIndex[i]];
+        shadeIntensity[i] = light.intensity * flicker * lw;
 
         shader.setVec3("lightPositions" + idx, light.position);
         shader.setVec3("lightColors" + idx, light.color);
-        shader.setFloat("lightIntensities" + idx, light.intensity * flicker);
+        shader.setFloat("lightIntensities" + idx, shadeIntensity[i]);
         shader.setFloat("lightRadii" + idx, light.radius);
 
-        // shadow-casters are placed first in shadeLightIndex above, so the i-th shaded light
-        // IS shadow slot i whenever i < numShadowLights - no lookup needed.
-        bool hasShadow = (i < numShadowLights);
         shader.setInt("lightShadowSlot" + idx, hasShadow ? i : -1);
         shader.setInt("lightShadowIsPoint" + idx, (hasShadow && shadowIsPoint[i]) ? 1 : 0);
         shader.setFloat("lightShadowWeight" + idx, hasShadow ? shadowWeight[shadeLightIndex[i]] : 0.0f);
@@ -641,11 +783,11 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     }
 
     // per-object albedo texture goes on the unit right after both shadow-map arrays
-    const int ALBEDO_UNIT = 2 * MAX_SHADOW_LIGHTS;   // = 8
+    const int ALBEDO_UNIT = 2 * MAX_SHADOW_LIGHTS;   // = 12
     shader.setInt("albedoMap", ALBEDO_UNIT);
 
     // blurred SSAO term, one unit further along
-    const int SSAO_UNIT = ALBEDO_UNIT + 1;   // = 9
+    const int SSAO_UNIT = ALBEDO_UNIT + 1;   // = 13
     glActiveTexture(GL_TEXTURE0 + SSAO_UNIT);
     glBindTexture(GL_TEXTURE_2D, ssaoBlurColorTex);
     shader.setInt("ssaoMap", SSAO_UNIT);
@@ -679,6 +821,71 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     }
 
     metrics.objectsCulled = metrics.objectsTotal - metrics.drawCalls;
+
+    // Fog reads back what the main pass just drew into sceneFBO, so it has to come after.
+    // Hand it the exact list of lights (and their already-flickered, already-faded
+    // intensities) the color pass just used, instead of letting it pick its own - see the
+    // "gotcha" on renderFog's declaration for why a second, independent selection popped.
+    std::vector<int> fogLightIndex(shadeLightIndex, shadeLightIndex + lightCount);
+    std::vector<float> fogLightIntensity(shadeIntensity, shadeIntensity + lightCount);
+    glm::mat4 invViewProj = glm::inverse(projection * view);
+    renderFog(scene, eye, invViewProj, fogLightIndex, fogLightIntensity, metrics);
+}
+
+void Renderer::renderFog(const Scene& scene, const glm::vec3& eye, const glm::mat4& invViewProj,
+                         const std::vector<int>& shadeLightIndex, const std::vector<float>& shadeLightIntensity,
+                         FrameMetrics& metrics) {
+    Framebuffer::unbind(viewportWidth, viewportHeight);   // draw the composited result to the screen
+
+    fogShader.use();
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, sceneFBO.colorTexture());
+    fogShader.setInt("sceneColor", 0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, sceneFBO.depthTexture());
+    fogShader.setInt("sceneDepth", 1);
+
+    fogShader.setMat4("invViewProj", invViewProj);
+    fogShader.setVec3("viewPos", eye);
+    fogShader.setVec3("fogColor", tuning.fogColor);
+    fogShader.setFloat("fogDensity", tuning.fogEnabled ? tuning.fogDensity : 0.0f);
+    fogShader.setFloat("fogScatter", tuning.fogScatter);
+    fogShader.setFloat("fogMaxDistance", tuning.fogMaxDistance);
+    int steps = tuning.fogEnabled ? tuning.fogSteps : 1;   // density 0 makes 1 step a no-op, cheaply
+    fogShader.setInt("fogSteps", steps);
+    metrics.fogSteps = steps;
+
+    // Fog only marches with a handful of lights, not the full shaded set - narrow
+    // shadeLightIndex down to its MAX_FOG_LIGHTS nearest members. This sorts WITHIN an
+    // already-stable list rather than re-picking from scene.lights, so which lights make the
+    // cut only changes when the main pass's own set changes (already anti-popped) - nothing
+    // here can pop on its own anymore.
+    const int MAX_FOG_LIGHTS = 4;   // must match #define MAX_FOG_LIGHTS in shaders/fog.frag
+    std::vector<int> order(shadeLightIndex.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = (int)i;
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        glm::vec3 da = scene.lights[shadeLightIndex[a]].position - eye;
+        glm::vec3 db = scene.lights[shadeLightIndex[b]].position - eye;
+        return glm::dot(da, da) < glm::dot(db, db);
+    });
+    int numFogLights = std::min((int)order.size(), MAX_FOG_LIGHTS);
+    fogShader.setInt("numFogLights", numFogLights);
+    for (int i = 0; i < numFogLights; ++i) {
+        int slot = order[i];
+        const Light& light = scene.lights[shadeLightIndex[slot]];
+        std::string idx = "[" + std::to_string(i) + "]";
+
+        fogShader.setVec3("fogLightPositions" + idx, light.position);
+        fogShader.setVec3("fogLightColors" + idx, light.color);
+        fogShader.setFloat("fogLightIntensities" + idx, shadeLightIntensity[slot]);
+        fogShader.setFloat("fogLightRadii" + idx, light.radius);
+    }
+
+    glDisable(GL_DEPTH_TEST);   // full-screen quad, no depth test needed
+    glBindVertexArray(quadVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+    glEnable(GL_DEPTH_TEST);
 }
 
 void Renderer::clean() {
@@ -696,6 +903,8 @@ void Renderer::clean() {
     gBufferShader.clean();
     ssaoShader.clean();
     ssaoBlurShader.clean();
+    fogShader.clean();
+    // sceneFBO cleans up its own GPU objects in its destructor (Framebuffer is RAII)
     glDeleteFramebuffers(1, &gBufferFBO);
     glDeleteTextures(1, &gPositionTex);
     glDeleteTextures(1, &gNormalTex);

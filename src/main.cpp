@@ -240,6 +240,7 @@ int main() {
         ImGui::Text("Triangles     : %d", metrics.trianglesDrawn);
         ImGui::Text("Lights        : %d", metrics.activeLights);
         ImGui::Text("Shadow lights : %d  (%d passes)", metrics.shadowLights, metrics.shadowPasses);
+        ImGui::Text("Fog steps     : %d", metrics.fogSteps);
         ImGui::Separator();
         ImGui::Text("Frustum culling: %s", cullingEnabled ? "ON" : "OFF");
 
@@ -257,9 +258,12 @@ int main() {
             ImGui::SliderFloat("Point bias min scale", &renderer.tuning.pointBiasMinScale, 0.0f, 0.1f);
             ImGui::SliderFloat("Point normal offset", &renderer.tuning.pointNormalOffset, 0.0f, 0.3f);
             ImGui::SliderFloat("Point softness", &renderer.tuning.pointPCFRadius, 0.0f, 0.15f);
-            ImGui::TextDisabled("Pop-in fix");
+            ImGui::TextDisabled("Pop-in fix (shadows)");
             ImGui::SliderFloat("Hysteresis margin", &renderer.tuning.shadowHysteresisMargin, 1.0f, 2.0f);
             ImGui::SliderFloat("Fade seconds", &renderer.tuning.shadowFadeSeconds, 0.0f, 1.5f);
+            ImGui::TextDisabled("Pop-in fix (lights, >32 nearby)");
+            ImGui::SliderFloat("Light hysteresis margin", &renderer.tuning.lightHysteresisMargin, 1.0f, 2.0f);
+            ImGui::SliderFloat("Light fade seconds", &renderer.tuning.lightFadeSeconds, 0.0f, 1.5f);
             ImGui::TextDisabled("Contact shadows (SSAO)");
             ImGui::Checkbox("SSAO enabled", &renderer.tuning.ssaoEnabled);
             ImGui::SliderFloat("SSAO radius", &renderer.tuning.ssaoRadius, 0.05f, 2.0f);
@@ -267,6 +271,17 @@ int main() {
             ImGui::SliderFloat("SSAO strength", &renderer.tuning.ssaoStrength, 0.5f, 4.0f);
             if (ImGui::Button("Reset to defaults"))
                 renderer.tuning = Renderer::ShadingTuning();
+        }
+
+        // M3: volumetric fog, ray marched (see shaders/fog.frag). fogSteps also drives the
+        // FrameMetrics::fogSteps counter above, for the "fog steps vs fps" experiment.
+        if (ImGui::CollapsingHeader("Volumetric fog")) {
+            ImGui::Checkbox("Fog enabled", &renderer.tuning.fogEnabled);
+            ImGui::ColorEdit3("Fog color", &renderer.tuning.fogColor.x);
+            ImGui::SliderFloat("Density", &renderer.tuning.fogDensity, 0.0f, 0.2f);
+            ImGui::SliderFloat("Scatter strength", &renderer.tuning.fogScatter, 0.0f, 2.0f);
+            ImGui::SliderFloat("Max distance", &renderer.tuning.fogMaxDistance, 5.0f, 100.0f);
+            ImGui::SliderInt("Steps", &renderer.tuning.fogSteps, 1, 64);
         }
 
         // --- M3 tools ---
@@ -281,12 +296,14 @@ int main() {
         }
         if (ImGui::Button("Generate")) {
             buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
+            renderer.resetLightFades();   // new scene, new lights - old fade state does not apply
             firstMouse = true;   // the camera teleported: avoid a mouse-look jump next frame
         }
         ImGui::SameLine();
         if (ImGui::Button("Random seed")) {
             dungeonSeed = (unsigned int)(glfwGetTime() * 100000.0);
             buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
+            renderer.resetLightFades();
             firstMouse = true;
         }
 
@@ -319,6 +336,7 @@ int main() {
         ImGui::SliderFloat("Cone tilt down", &lightingParams.coneTilt, 0.0f, 1.0f);
         if (ImGui::Button("Regenerate with these")) {
             buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
+            renderer.resetLightFades();
             firstMouse = true;   // camera teleported: avoid a mouse-look jump next frame
         }
         ImGui::End();

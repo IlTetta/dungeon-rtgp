@@ -36,7 +36,7 @@ uniform float lightRadii[MAX_LIGHTS];
 
 // per-light shadow slot: -1 = no shadow (fully lit), otherwise which shadow map/cubemap and
 // whether it's a SPOT (2D) or POINT (cubemap) one.
-#define MAX_SHADOW_LIGHTS 4
+#define MAX_SHADOW_LIGHTS 6
 uniform int lightShadowSlot[MAX_LIGHTS];
 uniform bool lightShadowIsPoint[MAX_LIGHTS];
 // fade weight (0..1) so a shadow ramps in/out over a fraction of a second instead of
