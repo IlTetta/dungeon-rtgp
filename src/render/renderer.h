@@ -27,8 +27,10 @@
 // Shadows: SPOT lights (wall torches) use a 2D depth map + PCF, close to a classic single-
 // light shadow-mapping setup (perspective instead of orthographic, since these are point
 // lights rather than directional). POINT lights (braziers) use a cubemap of world-space
-// distances instead, since a single cone can't cover an omnidirectional light. Volumetric
-// fog is still not included here; see render/framebuffer.h for that scaffolding.
+// distances instead, since a single cone can't cover an omnidirectional light.
+//
+// Volumetric fog (M3): after the color pass, a full-screen ray march (shaders/fog.frag)
+// reads back its color+depth and composites an atmospheric haze on top - see renderFog().
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -51,13 +53,22 @@ public:
     // renderInternal()). main.cpp exposes them in an ImGui panel to dial them in without
     // recompiling; defaults below are what looked right during testing.
     struct ShadingTuning {
-        float ambient           = 0.06f;   // base fill light so unlit areas are not pitch black (kept
-                                            // low on purpose - higher washes out the shadow/SSAO contrast)
+        // Master real-time-shadow switch, same idea as ssaoEnabled/fogEnabled below: forces
+        // numShadowLights to 0 for the frame (renderInternal never populates shadowCandidates
+        // when this is off), so every light renders fully lit/unshadowed. Mainly a diagnostic
+        // A/B toggle - e.g. to tell a shadow-bias artifact apart from an SSAO one by watching
+        // whether a given visual survives with shadows fully out of the picture.
+        bool  shadowsEnabled = true;
+
+        float ambient           = 0.09f;   // base fill light so unlit areas are not pitch black
         float spotBiasMax       = 0.05f;   // SPOT shadow depth bias at grazing angles
         float spotBiasMin       = 0.005f;  // SPOT shadow depth bias at normal incidence
         float spotNormalOffset  = 0.03f;   // SPOT: push along N before the light-space projection
-        float pointBiasScale    = 0.05f;   // POINT shadow distance bias at grazing angles (x lightRadius)
-        float pointBiasMinScale = 0.02f;   // POINT shadow distance bias at normal incidence (x lightRadius)
+        // Plain world-unit distance bias, same idea as spotBiasMax/Min above - NOT scaled by
+        // the light's radius (see ggx.frag: that used to make the bias for a brazier bigger
+        // than the props next to it, erasing their contact shadows into a bright halo).
+        float pointBiasScale    = 0.05f;   // POINT shadow distance bias at grazing angles
+        float pointBiasMinScale = 0.02f;   // POINT shadow distance bias at normal incidence
         float pointNormalOffset = 0.06f;   // POINT: push along N before the distance test
         float pointPCFRadius    = 0.04f;   // POINT shadow softness (0 = hard single-tap)
 
@@ -65,46 +76,41 @@ public:
         // moves: a light that already has a slot keeps it as long as it stays within
         // shadowHysteresisMargin of the cutoff distance, instead of popping out the instant
         // something else edges closer; shadowFadeSeconds is how long a shadow takes to ramp
-        // fully in/out when a light does enter/leave its slot.
-        //
-        // Every light in the dungeon (room lights, wall torches, braziers) is a POINT,
-        // shadow-casting light (see dungeon_geometry.h / props.h), so it is normal to have
-        // 6-10+ candidates within a few units of the player against a hard budget of 4 real
-        // shadows / 32 shaded lights - the ranking swaps constantly just from walking. 1.25/
-        // 0.35s was tuned against an open test room with few lights; against a real prop-dense
-        // room the swap was still visible as a near-instant on/off. Raised both a good deal so
-        // a swap reads as a slow breathing fade instead - it does not remove the underlying
-        // nearest-K limit (a real fix would be a smarter/bigger light-culling scheme, out of
-        // scope here), just hides its transitions.
+        // fully in/out when it does enter/leave its slot. Every light in the dungeon is a
+        // POINT, shadow-casting light (see dungeon_geometry.h / props.h), so it's normal to
+        // have 6-10+ candidates within a few units of the player against a budget of
+        // MAX_SHADOW_LIGHTS real shadows - margin/fade keep that ranking churn from reading
+        // as a flicker.
         float shadowHysteresisMargin = 1.6f;
-        float shadowFadeSeconds      = 1.2f;
+        float shadowFadeSeconds      = 0.5f;
 
         // Same idea for the SHADING light selection (which lights get a uniform slot at all,
         // not just which ones get a shadow): with more than MAX_LIGHTS torches nearby, a light
         // could otherwise drop out of the nearest-MAX_LIGHTS set and go instantly dark.
         float lightHysteresisMargin = 1.6f;
-        float lightFadeSeconds      = 1.2f;
+        float lightFadeSeconds      = 0.5f;
 
         // SSAO ("contact shadow" near where props/walls meet the floor, independent of any
         // light) - see shaders/ssao.frag. ssaoEnabled is mostly there for quick A/B testing.
         bool  ssaoEnabled = true;
-        float ssaoRadius   = 0.5f;    // view-space units: how far the sample hemisphere reaches
-        float ssaoBias     = 0.025f;  // fights the SSAO equivalent of shadow acne
-        float ssaoStrength = 1.5f;    // contrast of the final AO term
+        float ssaoRadius   = 0.3f;    // view-space units: how far the sample hemisphere reaches
+        float ssaoBias     = 0.035f;  // fights the SSAO equivalent of shadow acne
+        float ssaoStrength = 1.2f;    // contrast of the final AO term
 
         // Volumetric fog (M3): ray marched from the camera to whatever the main pass drew,
         // see shaders/fog.frag. fogSteps also lands in FrameMetrics::fogSteps for the
         // "fog steps vs fps" benchmark experiment.
         bool  fogEnabled     = true;
         glm::vec3 fogColor   = glm::vec3(0.5f, 0.55f, 0.6f);   // cool, slightly blue mist
-        // 0.035 looked fine in isolation but over an indoor room-sized ray (~15 units) it
-        // works out to exp(-0.035*15) =~ 0.59 transmittance - almost half the pixel's light
-        // replaced by haze, burying the shadow/SSAO contrast under a uniform "milky" look.
-        // Went too far the other way first (0.015): in a small alcove-sized room the ray is
-        // short enough that the fog became nearly invisible. 0.02 is the middle ground -
-        // still a light haze over a normal room, without flattening a small one.
+        // exp(-density*rayLength), so this alone decides how much haze builds up over a
+        // typical room-sized ray - too high buries the shadow/SSAO contrast in a uniform
+        // "milky" look, too low makes the fog invisible in a small room. 0.02 reads as a
+        // light haze at normal room distances.
         float fogDensity     = 0.02f;    // higher = thicker fog, opaque sooner
-        float fogScatter     = 0.35f;    // how strongly nearby torches light up the fog
+        // How much nearby torches light up the fog. In a big room the ray marches much
+        // farther and passes closer to more torches, so this accumulates fast - kept low so
+        // it stays a local glow around a torch instead of washing out the whole room.
+        float fogScatter     = 0.18f;    // how strongly nearby torches light up the fog
         float fogMaxDistance = 40.0f;    // world units: march no farther than this
         // Ray march sample count: quality/cost knob, and the one the "fog steps vs fps"
         // benchmark experiment dials up/down. 12 is the default because 24 measured a real
@@ -129,16 +135,11 @@ public:
     // hold either a SPOT (2D map) or a POINT (cubemap) shadow, decided per-frame by that
     // slot's light's Light::type.
     //
-    // Raised from 4 to 6 (playtesting feedback: with every torch/brazier in the dungeon
-    // being a shadow-casting POINT light - see dungeon_geometry.h/props.h - 4 slots against
-    // 6-10+ nearby candidates meant the ranking was evicting/retaking a slot almost every
-    // step, and even with the pop-in fade that reads as a harsh flicker). This is NOT the
-    // same knob as MAX_LIGHTS: that one drives much bigger MAX_LIGHTS-sized arrays in
-    // ggx.frag and going from 32 to 64 previously blew past GL_MAX_FRAGMENT_UNIFORM_COMPONENTS
-    // (see the light-popping note) - left untouched here. This one only adds 2 more mat4 +
-    // 2 more texture units (one 2D shadow map + one cubemap), safely under the GL 4.1 minimum
-    // guaranteed texture unit count; the real cost is 2 more shadow depth passes per frame
-    // (up to 6x that if they land on POINT lights, which in this project they always do).
+    // Not the same knob as MAX_LIGHTS below: that one drives much bigger arrays in ggx.frag,
+    // and pushing it from 32 to 64 once blew past GL_MAX_FRAGMENT_UNIFORM_COMPONENTS (see the
+    // light-popping note) - do not raise that one casually. This one only adds a couple of
+    // mat4s and texture units per step, well under the GL 4.1 minimum guaranteed texture
+    // units, so it's safe to raise if the shadow budget ever needs more headroom again.
     static const int MAX_SHADOW_LIGHTS = 6;
 
     // Resolution of a SPOT light's 2D shadow map (square). 1024 is the usual starting point
@@ -323,15 +324,10 @@ private:
     // pixel's depth back into a world position.
     //
     // `shadeLightIndex`/`shadeLightIntensity` are exactly what the color pass just used (same
-    // indices into scene.lights, same already-flickered-and-faded intensity per entry) -
-    // fog picks its own MAX_FOG_LIGHTS-nearest subset of THIS list rather than re-sorting
-    // scene.lights from scratch. Gotcha found by playtesting: an independent nearest-K fog
-    // selection has no memory of what it picked last frame, so a torch entering the fog's
-    // list pops in at full attenuated brightness the instant it crosses the distance cutoff -
-    // with fog able to replace ~40% of the visible light over a room-sized ray, that single-
-    // frame jump reads as "the whole room's lighting changes when I take one step". Reusing
-    // the main pass's list sidesteps this for free: that list only changes membership through
-    // the already-fading lightWeight/shadowWeight ramps, so there is nothing left to pop.
+    // indices into scene.lights, same already-flickered-and-faded intensity per entry) - fog
+    // picks its own MAX_FOG_LIGHTS-nearest subset of THIS list instead of re-sorting
+    // scene.lights independently, so a torch entering/leaving the fog's list only happens
+    // through the same already-fading weights, never as an unfaded pop of its own.
     void renderFog(const Scene& scene, const glm::vec3& eye, const glm::mat4& invViewProj,
                    const std::vector<int>& shadeLightIndex, const std::vector<float>& shadeLightIntensity,
                    FrameMetrics& metrics);

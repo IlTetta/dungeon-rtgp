@@ -193,6 +193,14 @@ void Renderer::renderPointShadowPass(const Scene& scene, int slot, const Light& 
 
     glViewport(0, 0, POINT_SHADOW_SIZE, POINT_SHADOW_SIZE);
     glBindFramebuffer(GL_FRAMEBUFFER, shadowCubeFBO[slot]);
+    // This cubemap stores world-space DISTANCE (GL_R32F). Without an explicit glClearColor, an
+    // unrendered texel (any direction that hits nothing before the far plane - e.g. toward
+    // open floor/ceiling, which never cast, see isShadowCaster) inherits whatever the last
+    // glClearColor call set elsewhere, which reads back as "occluder right here" and shadows
+    // that whole direction for no reason. Clear to well past the far plane instead, so "nothing
+    // here" correctly means "no occluder".
+    float farClear = light.radius * 2.0f;
+    glClearColor(farClear, farClear, farClear, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);   // clears all 6 layers at once
 
     glEnable(GL_CULL_FACE);
@@ -461,11 +469,8 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     // keep shadowWeight/lightWeight in sync with the scene - a dungeon regenerate can change
     // how many lights exist, in which case there's no "old" fade to continue. Starting at 1.0,
     // not 0: a freshly (re)generated scene isn't transitioning FROM anything, so every light
-    // should just appear lit immediately, same as before this fade system existed. Starting at
-    // 0 made every light in the dungeon take a full lightFadeSeconds/shadowFadeSeconds (0.8s)
-    // to visibly warm up after every launch and every Regenerate - exactly backwards, since the
-    // fade is meant to hide a light LOSING its slot mid-game, not to delay a light gaining one
-    // for the first time.
+    // should just appear lit immediately - the fade is meant to hide a light LOSING its slot
+    // mid-game, not to delay one gaining it for the first time.
     if (shadowWeight.size() != scene.lights.size())
         shadowWeight.assign(scene.lights.size(), 1.0f);
     if (lightWeight.size() != scene.lights.size())
@@ -474,25 +479,19 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     float now = (float)glfwGetTime();
     float dt = (lastFrameTime < 0.0f) ? 0.0f : (now - lastFrameTime);   // first frame: no fade yet
     // Clamp dt before it drives any fade step below. Entering a room can make several new
-    // POINT lights become shadow-casters in the same frame (6 depth passes each), which can
-    // spike that one frame's real duration well above the usual ~16-45ms - and an uncapped dt
-    // turns fadeStep = dt/fadeSeconds into a huge jump for exactly that frame, i.e. the whole
-    // 1.2s fade completing in one step. Capping dt to a "normal-ish" frame keeps the fade
-    // spread over several frames even right after a stall, instead of catching up all at once.
+    // POINT lights become shadow-casters in the same frame (6 depth passes each), spiking
+    // that frame's real duration - an uncapped dt turns fadeStep = dt/fadeSeconds into a huge
+    // jump for exactly that frame, completing the whole fade in one step. Capping it keeps the
+    // fade spread over several frames even right after a stall.
     dt = std::min(dt, 1.0f / 15.0f);
     lastFrameTime = now;
 
-    // Tried ranking by "in the view frustum" ahead of "merely closer" here (same AABB-vs-
-    // frustum test as object culling, fed the light's position as a zero-size box). Reverted:
-    // it meant standing PERFECTLY STILL and just turning your head could reshuffle the whole
-    // budget and fade lights in/out, which is worse than the problem it fixed - a light's
-    // position does not change when you turn on the spot, so a physically-plausible dungeon
-    // should not either. Distance-only, as before: a torch that ends up two rooms behind you
-    // genuinely leaving the light's live-shadow budget (this is a real, honest limit of a
-    // fixed-size real-time budget, not a bug) is a far smaller sin than lighting depending on
-    // which way you happen to be facing while not moving at all.
+    // Distance-only ranking, deliberately - NOT weighted by the view frustum. A light's
+    // position doesn't change when you turn your head, so a physically-plausible dungeon
+    // shouldn't either (view-frustum-based ranking made lights reshuffle just from turning in
+    // place, which is worse than a torch two rooms behind you honestly falling out of budget).
     std::vector<int> shadowCandidates;
-    for (size_t i = 0; i < scene.lights.size(); ++i) {
+    for (size_t i = 0; i < scene.lights.size() && tuning.shadowsEnabled; ++i) {
         if (scene.lights[i].castsShadow) shadowCandidates.push_back((int)i);
     }
     std::sort(shadowCandidates.begin(), shadowCandidates.end(), [&](int a, int b) {
@@ -698,14 +697,12 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
             lightWeight[idx] = std::max(target, lightWeight[idx] - lightFadeStep);
     }
     // A light that IS a forced shadow-caster right now is missing from nonShadowCandidates
-    // above, so without this its lightWeight would never move and would go stale (commonly
-    // stuck at its initial 0, if it has been a shadow-caster since the light first came into
-    // range and so never once got ramped as a "regular" shaded light). Its own brightness this
-    // frame bypasses lightWeight entirely (hasShadow -> lw = 1.0 below), which hid the problem
-    // right up until the moment a closer light takes its shadow slot away: hasShadow flips to
-    // false and lw suddenly reads that stale value - an instant drop from full brightness to
-    // whatever was frozen in there, THEN a fresh 0.8s climb back up. Keeping it ramped toward 1
-    // the whole time it holds a forced slot means there is nothing stale left to fall back to.
+    // above, so without this its lightWeight would never move and could go stale (e.g. stuck
+    // at its initial value if it's been a caster since it first came into range). Its own
+    // brightness bypasses lightWeight while forced (hasShadow -> lw = 1.0 below), which hid the
+    // staleness right up until it lost its shadow slot: hasShadow flips false and lw suddenly
+    // reads whatever was frozen in there - an instant drop, then a fresh climb back up. Keeping
+    // it ramped toward 1 the whole time means there's nothing stale to fall back to.
     for (int idx : chosen)
         lightWeight[idx] = std::min(1.0f, lightWeight[idx] + lightFadeStep);
 
@@ -715,15 +712,12 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     // the intensity SENT to the shader is animated, scene.lights[i].intensity itself is never
     // modified. Reuses `now` from the fade timer above.
     //
-    // The phase MUST be seeded from the light's own scene.lights index (shadeLightIndex[i]),
-    // not from its slot position i: shadeLightIndex is re-sorted by distance every frame, so
-    // two lights that are both already fully active and not fading at all can still swap
-    // slots the instant their relative distance to the camera flips (which happens
-    // constantly while walking near several torches). Seeding by slot meant that swap alone
-    // changed which phase each light used - an instant jump in its flicker term (up to
-    // ~30% of its brightness) with no fade involved at all, so lengthening the pop-in fade
-    // above did nothing for it. Seeding by the light's own index makes the phase travel WITH
-    // the light regardless of which slot it lands in.
+    // The phase is seeded from the light's own scene.lights index (shadeLightIndex[i]), not
+    // its slot position i: shadeLightIndex gets re-sorted by distance every frame, so two
+    // already fully-lit lights can swap slots just from a tiny change in relative distance -
+    // seeding by slot made that swap alone jump the flicker phase, an unfaded pop with nothing
+    // to do with the actual pop-in system. Seeding by the light's own index keeps the phase
+    // with the light regardless of which slot it lands in.
     float t = now;
 
     // Also kept per-light (not just sent to the shader): the fog pass reuses these exact

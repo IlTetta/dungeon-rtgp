@@ -248,6 +248,7 @@ int main() {
         // the values in as the new defaults.
         ImGui::Separator();
         if (ImGui::CollapsingHeader("Shadow tuning")) {
+            ImGui::Checkbox("Shadows enabled", &renderer.tuning.shadowsEnabled);
             ImGui::SliderFloat("Ambient", &renderer.tuning.ambient, 0.0f, 0.5f);
             ImGui::TextDisabled("SPOT (wall torches)");
             ImGui::SliderFloat("Spot bias max", &renderer.tuning.spotBiasMax, 0.0f, 0.2f);

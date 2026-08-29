@@ -164,7 +164,11 @@ void main() {
                 vec3 offsetFragPos = FragPos + N * pointNormalOffset;
                 vec3 fragToLight = offsetFragPos - lightPositions[i];
                 float currentDist = length(fragToLight);
-                float bias = max(pointBiasScale * lightRadii[i] * (1.0 - NdotL), pointBiasMinScale * lightRadii[i]);
+                // NOT scaled by lightRadii[i] (a brazier's reach, e.g. 20-30 world units) -
+                // that used to make the bias bigger than the props next to it, erasing their
+                // contact shadows into a bright "moat". Plain world-unit bias now, same idea
+                // as spotBiasMax/Min just above.
+                float bias = max(pointBiasScale * (1.0 - NdotL), pointBiasMinScale);
                 float diskRadius = (1.0 + currentDist / max(lightRadii[i], 0.001)) * pointPCFRadius;
 
                 for (int s = 0; s < 20; ++s) {
