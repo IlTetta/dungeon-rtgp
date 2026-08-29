@@ -27,8 +27,10 @@
 // Shadows: SPOT lights (wall torches) use a 2D depth map + PCF, close to a classic single-
 // light shadow-mapping setup (perspective instead of orthographic, since these are point
 // lights rather than directional). POINT lights (braziers) use a cubemap of world-space
-// distances instead, since a single cone can't cover an omnidirectional light. Volumetric
-// fog is still not included here; see render/framebuffer.h for that scaffolding.
+// distances instead, since a single cone can't cover an omnidirectional light.
+//
+// Volumetric fog (M3): after the color pass, a full-screen ray march (shaders/fog.frag)
+// reads back its color+depth and composites an atmospheric haze on top - see renderFog().
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -39,6 +41,7 @@
 #include "core/scene.h"
 #include "core/metrics.h"
 #include "world/frustum_culling.h"   // Andrea's culling, used inside the render loop
+#include "render/framebuffer.h"      // off-screen color+depth target the fog pass reads from
 
 class Renderer {
 public:
@@ -50,12 +53,22 @@ public:
     // renderInternal()). main.cpp exposes them in an ImGui panel to dial them in without
     // recompiling; defaults below are what looked right during testing.
     struct ShadingTuning {
-        float ambient           = 0.12f;   // base fill light so unlit areas are not pitch black
+        // Master real-time-shadow switch, same idea as ssaoEnabled/fogEnabled below: forces
+        // numShadowLights to 0 for the frame (renderInternal never populates shadowCandidates
+        // when this is off), so every light renders fully lit/unshadowed. Mainly a diagnostic
+        // A/B toggle - e.g. to tell a shadow-bias artifact apart from an SSAO one by watching
+        // whether a given visual survives with shadows fully out of the picture.
+        bool  shadowsEnabled = true;
+
+        float ambient           = 0.09f;   // base fill light so unlit areas are not pitch black
         float spotBiasMax       = 0.05f;   // SPOT shadow depth bias at grazing angles
         float spotBiasMin       = 0.005f;  // SPOT shadow depth bias at normal incidence
         float spotNormalOffset  = 0.03f;   // SPOT: push along N before the light-space projection
-        float pointBiasScale    = 0.05f;   // POINT shadow distance bias at grazing angles (x lightRadius)
-        float pointBiasMinScale = 0.02f;   // POINT shadow distance bias at normal incidence (x lightRadius)
+        // Plain world-unit distance bias, same idea as spotBiasMax/Min above - NOT scaled by
+        // the light's radius (see ggx.frag: that used to make the bias for a brazier bigger
+        // than the props next to it, erasing their contact shadows into a bright halo).
+        float pointBiasScale    = 0.05f;   // POINT shadow distance bias at grazing angles
+        float pointBiasMinScale = 0.02f;   // POINT shadow distance bias at normal incidence
         float pointNormalOffset = 0.06f;   // POINT: push along N before the distance test
         float pointPCFRadius    = 0.04f;   // POINT shadow softness (0 = hard single-tap)
 
@@ -63,16 +76,47 @@ public:
         // moves: a light that already has a slot keeps it as long as it stays within
         // shadowHysteresisMargin of the cutoff distance, instead of popping out the instant
         // something else edges closer; shadowFadeSeconds is how long a shadow takes to ramp
-        // fully in/out when a light does enter/leave its slot.
-        float shadowHysteresisMargin = 1.25f;
-        float shadowFadeSeconds      = 0.35f;
+        // fully in/out when it does enter/leave its slot. Every light in the dungeon is a
+        // POINT, shadow-casting light (see dungeon_geometry.h / props.h), so it's normal to
+        // have 6-10+ candidates within a few units of the player against a budget of
+        // MAX_SHADOW_LIGHTS real shadows - margin/fade keep that ranking churn from reading
+        // as a flicker.
+        float shadowHysteresisMargin = 1.6f;
+        float shadowFadeSeconds      = 0.5f;
+
+        // Same idea for the SHADING light selection (which lights get a uniform slot at all,
+        // not just which ones get a shadow): with more than MAX_LIGHTS torches nearby, a light
+        // could otherwise drop out of the nearest-MAX_LIGHTS set and go instantly dark.
+        float lightHysteresisMargin = 1.6f;
+        float lightFadeSeconds      = 0.5f;
 
         // SSAO ("contact shadow" near where props/walls meet the floor, independent of any
         // light) - see shaders/ssao.frag. ssaoEnabled is mostly there for quick A/B testing.
         bool  ssaoEnabled = true;
-        float ssaoRadius   = 0.5f;    // view-space units: how far the sample hemisphere reaches
-        float ssaoBias     = 0.025f;  // fights the SSAO equivalent of shadow acne
-        float ssaoStrength = 1.5f;    // contrast of the final AO term
+        float ssaoRadius   = 0.3f;    // view-space units: how far the sample hemisphere reaches
+        float ssaoBias     = 0.035f;  // fights the SSAO equivalent of shadow acne
+        float ssaoStrength = 1.2f;    // contrast of the final AO term
+
+        // Volumetric fog (M3): ray marched from the camera to whatever the main pass drew,
+        // see shaders/fog.frag. fogSteps also lands in FrameMetrics::fogSteps for the
+        // "fog steps vs fps" benchmark experiment.
+        bool  fogEnabled     = true;
+        glm::vec3 fogColor   = glm::vec3(0.5f, 0.55f, 0.6f);   // cool, slightly blue mist
+        // exp(-density*rayLength), so this alone decides how much haze builds up over a
+        // typical room-sized ray - too high buries the shadow/SSAO contrast in a uniform
+        // "milky" look, too low makes the fog invisible in a small room. 0.02 reads as a
+        // light haze at normal room distances.
+        float fogDensity     = 0.02f;    // higher = thicker fog, opaque sooner
+        // How much nearby torches light up the fog. In a big room the ray marches much
+        // farther and passes closer to more torches, so this accumulates fast - kept low so
+        // it stays a local glow around a torch instead of washing out the whole room.
+        float fogScatter     = 0.18f;    // how strongly nearby torches light up the fog
+        float fogMaxDistance = 40.0f;    // world units: march no farther than this
+        // Ray march sample count: quality/cost knob, and the one the "fog steps vs fps"
+        // benchmark experiment dials up/down. 12 is the default because 24 measured a real
+        // FPS drop (60-100 -> 25-36) with MAX_FOG_LIGHTS lights sampled at every step - the
+        // slider still goes up to 64 for the experiment itself.
+        int   fogSteps       = 12;
     } tuning;
 
     // Must be >= the number of lights we ever pass to the shader in one draw call, and must
@@ -83,14 +127,20 @@ public:
     static const int MAX_LIGHTS = 32;
 
     // How many lights can cast a REAL shadow at the same time, and must match
-    // "#define MAX_SHADOW_LIGHTS 4" in shaders/ggx.frag. Fixed budget across the whole game,
+    // "#define MAX_SHADOW_LIGHTS 6" in shaders/ggx.frag. Fixed budget across the whole game,
     // not per room: renderInternal() does not just take "the first MAX_SHADOW_LIGHTS in
     // Scene::lights" - every frame it picks the ones closest to the camera, so real shadows
     // follow the player from room to room. A light that doesn't make the cut this frame
     // falls back to unshadowed (same as castsShadow == false) - never a crash. A slot can
     // hold either a SPOT (2D map) or a POINT (cubemap) shadow, decided per-frame by that
     // slot's light's Light::type.
-    static const int MAX_SHADOW_LIGHTS = 4;
+    //
+    // Not the same knob as MAX_LIGHTS below: that one drives much bigger arrays in ggx.frag,
+    // and pushing it from 32 to 64 once blew past GL_MAX_FRAGMENT_UNIFORM_COMPONENTS (see the
+    // light-popping note) - do not raise that one casually. This one only adds a couple of
+    // mat4s and texture units per step, well under the GL 4.1 minimum guaranteed texture
+    // units, so it's safe to raise if the shadow budget ever needs more headroom again.
+    static const int MAX_SHADOW_LIGHTS = 6;
 
     // Resolution of a SPOT light's 2D shadow map (square). 1024 is the usual starting point
     // for an indoor scene at this scale; if PCF edges look too blocky up close, or perf needs
@@ -112,6 +162,15 @@ public:
     // OpenGL viewport and the projection matrix (they must always match, or the image comes
     // out stretched).
     void setViewport(int width, int height);
+
+    // Call this right after rebuilding the Scene from scratch (dungeon "Regenerate"/"Random
+    // seed"/etc.). shadowWeight/lightWeight only auto-reset when scene.lights.size() actually
+    // changes, which a same-size regenerate would NOT trigger - leaving old per-light fade
+    // state misapplied to a completely different set of lights (one could start already fully
+    // lit, another already faded out, until they drift back over the next fade duration).
+    // Clearing both here makes every light start its fade from a clean 0, same as a fresh
+    // launch.
+    void resetLightFades();
 
     // Draws one whole frame from "camera" (the first-person player camera). Culls against
     // that same camera's frustum. Also writes drawCalls / trianglesDrawn into "metrics".
@@ -161,6 +220,13 @@ private:
     // popping. Reset to all-0 whenever its size no longer matches scene.lights.size() (the
     // dungeon was regenerated, so there is no "old" light to continue a fade from).
     std::vector<float> shadowWeight;
+
+    // Same idea for the SHADING selection (which lights get a uniform slot / contribute light
+    // at all): indexed like scene.lights, persists across frames. A light not forced in as a
+    // shadow-caster ramps toward 1 while it holds a shading slot, toward 0 once it doesn't -
+    // and keeps its slot until this reaches 0 (see the "gotcha" note in renderInternal), so a
+    // torch fades out instead of vanishing when the player walks into a torch-dense area.
+    std::vector<float> lightWeight;
 
     // Wall-clock time (glfwGetTime()) at the end of the previous renderInternal() call, so we
     // can compute a per-frame delta for the fade above without main.cpp passing one in. -1
@@ -244,6 +310,27 @@ private:
     // after the shadow passes and before the color pass (the color pass samples its result).
     // `view`/`cullFrustum` match whichever camera renderInternal is drawing from.
     void renderSSAO(const Scene& scene, const glm::mat4& view, const Frustum& cullFrustum);
+
+    // --- fog state ---
+    // The main color pass draws into this (color + depth) instead of straight to the screen,
+    // so the fog pass can read both back afterward. Uses the existing Framebuffer class
+    // (render/framebuffer.h), unused until now.
+    Framebuffer sceneFBO;
+    Shader fogShader;   // shaders/fullscreen.vert + fog.frag
+
+    // Ray march the fog from `eye` using sceneFBO's color+depth, and composite the result
+    // straight onto the screen (framebuffer 0). Called once per frame, after the main color
+    // pass and before the HUD. `invViewProj` is projection*view inverted, to turn this
+    // pixel's depth back into a world position.
+    //
+    // `shadeLightIndex`/`shadeLightIntensity` are exactly what the color pass just used (same
+    // indices into scene.lights, same already-flickered-and-faded intensity per entry) - fog
+    // picks its own MAX_FOG_LIGHTS-nearest subset of THIS list instead of re-sorting
+    // scene.lights independently, so a torch entering/leaving the fog's list only happens
+    // through the same already-fading weights, never as an unfaded pop of its own.
+    void renderFog(const Scene& scene, const glm::vec3& eye, const glm::mat4& invViewProj,
+                   const std::vector<int>& shadeLightIndex, const std::vector<float>& shadeLightIntensity,
+                   FrameMetrics& metrics);
 
     // NB: the renderer no longer owns any texture. Each object carries a materialIndex into
     // Scene::materials, and we just bind that material's albedo texture. Loading the textures
