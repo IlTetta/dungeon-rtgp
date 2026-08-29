@@ -30,4 +30,10 @@ struct FrameMetrics {
     // took (a POINT light costs 6, one per cubemap face; a SPOT light costs 1)
     int shadowLights    = 0;      // filled by Renderer
     int shadowPasses    = 0;      // filled by Renderer
+
+    // Particles (M3, Andrea): filled by ParticleSystem. particleDrawCalls is 1 when the particles
+    // are drawn INSTANCED (all in one draw call) and = particlesDrawn on the naive
+    // one-call-per-particle path, so the CSV shows directly what instancing saves.
+    int particlesDrawn    = 0;    // filled by ParticleSystem
+    int particleDrawCalls = 0;    // filled by ParticleSystem
 };

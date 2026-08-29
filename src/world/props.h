@@ -172,6 +172,7 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
         L.intensity = 3.5f;
         L.radius = 10.0f * t;
         L.castsShadow = true;   // LIGHT_POINT -> cubemap shadow (Lorenzo's POINT path)
+        L.isFire = true;        // a brazier fire -> particles spawn here
         scene.lights.push_back(L);
     };
 
@@ -216,6 +217,7 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
         L.intensity = lp.torchIntensity;                       // moderate: many torches can be lit at once
         L.radius = lp.torchRadius * t;
         L.isTorch = true;                                      // tunable from the Lighting window
+        L.isFire = true;                                       // a torch flame -> particles spawn here
         // A torch flame radiates in ALL directions, so it's a POINT light with a cubemap shadow:
         // that shadows the floor AND the walls (a single SPOT cone could only cover one of them).
         // Costs 6 depth passes vs 1 for a SPOT, but the renderer only shadows the nearest few.
@@ -376,6 +378,9 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
         // visible body. MAT_DECOR so it doesn't self-shadow / block the player.
         addPropInstance(scene, brazier, floorModel(brazier, cx, cz, rf(0.0f, 6.28f), 1.0f), MAT_DECOR);
         reserve(occ, cx, cz, 0.7f);
+        // the central brazier is its own light source now (there are no per-room fill lights any
+        // more): a warm POINT light + fire, at the bowl. Same values the room fill light used to have.
+        addLight(cx, 1.2f, cz);
 
         // colonnade along the two side walls of big rooms (fixed positions -> reserved)
         if (room.w >= 6 && room.h >= 6) {

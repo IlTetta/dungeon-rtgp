@@ -72,6 +72,11 @@ struct Light {
     // Scene-side tag (Andrea): true for wall / corridor torches, so the ImGui "Lighting" window can
     // tune only the torch lights at runtime (applyTorchLightTuning). Room lights leave it false.
     bool isTorch = false;
+
+    // Scene-side tag (Andrea): true for lights that are an actual FLAME (torches + braziers), so the
+    // particle system spawns fire ONLY at real fires - not at a room's bare center fill-light (e.g.
+    // the statue room, which has a center light but a statue there, not a brazier). Set in props.h.
+    bool isFire = false;
 };
 
 // A visual material: HOW a surface looks. For now: an albedo (base color) texture, a texture

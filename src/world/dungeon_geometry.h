@@ -109,22 +109,12 @@ inline DungeonLayout buildDungeonLayout(const Dungeon& d, const DungeonParams& p
         }
     }
 
-    // --- lights: one warm "torch" near the ceiling at the center of each room ---
-    for (const Rect& room : d.rooms) {
-        float cx = (room.x + room.w * 0.5f) * t;
-        float cz = (room.y + room.h * 0.5f) * t;
-
-        Light light;
-        light.position = glm::vec3(cx, 1.2f, cz);    // low, near the brazier fire we place here
-        light.color = glm::vec3(1.0f, 0.8f, 0.5f);   // warm, orange-ish
-        light.intensity = 3.5f;                      // brighter so props are clearly visible
-        light.radius = 10.0f * t;                    // reaches farther, into the corridors a bit
-        // a brazier has no natural "aim", so it stays LIGHT_POINT (the default) and gets a
-        // cubemap shadow. Which lights actually get a real shadow each frame is decided
-        // dynamically by nearest-to-camera in Renderer::renderInternal, not here.
-        light.castsShadow = true;
-        layout.lights.push_back(light);
-    }
+    // --- lights ---
+    // No per-room "fill" lights here any more: EVERY light in the scene is an actual fire prop (a
+    // wall/corridor torch or a brazier), added in props.h. That way every light source has a visible
+    // mesh AND fire particles - no invisible, mesh-less lights. (A room's central brazier gets its
+    // own light in props.h; the showpiece room is lit by its flanking braziers + the wall torches.)
+    // So layout.lights is left empty here and filled entirely on the props side.
 
     return layout;
 }

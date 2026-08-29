@@ -35,6 +35,7 @@
 #include "render/renderer.h"
 #include "bench/benchmark.h"         // M3 benchmark harness: record/replay camera path + CSV log
 #include "bench/experiment.h"        // M3 experiment automation: replay one path once per config
+#include "world/particles.h"         // M3 instanced spark/ember particles rising from the flames
 
 // Dear ImGui (performance HUD)
 #include "imgui.h"
@@ -192,6 +193,13 @@ int main() {
     bool savedCulling = cullingEnabled;   // user settings captured at batch start, restored after
     bool savedSsao = false;               // (set from renderer.tuning when the batch starts)
 
+    // --- particles (M3): instanced sparks/embers rising from the flames ---
+    ParticleSystem particles;
+    int  particleCount      = 4000;       // pool size, driven by the HUD slider / experiments
+    bool savedInstanced     = true;       // particle settings captured at batch start, restored after
+    int  savedParticleCount = 4000;
+    particles.init(scene, particleCount);   // emitters come from the scene lights (each is a flame)
+
     // --- init Dear ImGui (for the performance HUD) ---
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -217,12 +225,19 @@ int main() {
         // the user had before it started.
         experiments.update(bench);
         if (experiments.running()) {
-            cullingEnabled = experiments.currentConfig().culling;
-            renderer.tuning.ssaoEnabled = experiments.currentConfig().ssao;
+            const ExperimentConfig& c = experiments.currentConfig();
+            cullingEnabled = c.culling;
+            renderer.tuning.ssaoEnabled = c.ssao;
+            particles.instanced = c.instanced;
+            particleCount = c.particleCount;
+            particles.setCount(particleCount);
         }
         else if (experimentsWereRunning) {   // the batch just ended this frame
             cullingEnabled = savedCulling;
             renderer.tuning.ssaoEnabled = savedSsao;
+            particles.instanced = savedInstanced;
+            particleCount = savedParticleCount;
+            particles.setCount(particleCount);
             benchStatus = "Experiments finished - see benchmarks/benchmark_*.csv";
         }
         experimentsWereRunning = experiments.running();
@@ -239,6 +254,10 @@ int main() {
 
         // advance the swinging chains (Verlet) and write their transforms back into the scene
         chainSystem.update(deltaTime, camera.Position, PLAYER_RADIUS, scene);
+
+        // advance the particle simulation (emitters are refreshed from the scene lights inside).
+        // currentFrame (= glfwGetTime) is the time base for the flame flicker, matching the light.
+        particles.update(scene, deltaTime, currentFrame);
 
         // start a new ImGui frame (before drawing anything)
         ImGui_ImplOpenGL3_NewFrame();
@@ -282,6 +301,9 @@ int main() {
 
             // draw from the spectator, cull against the frozen player frustum, hide the ceiling
             renderer.renderSpectator(scene, specView, specEye, playerFrustum, /*hideCeiling*/ true, metrics);
+            // particles are skipped in the debug overhead view -> report zero for this frame
+            metrics.particlesDrawn = 0;
+            metrics.particleDrawCalls = 0;
 
             // overlay the player frustum as a yellow wireframe cage, so the culling volume is visible
             if (showFrustumWire)
@@ -289,6 +311,8 @@ int main() {
         }
         else {
             renderer.render(scene, camera, metrics);
+            // sparks/embers on top of the opaque scene (fills the particle counters in metrics)
+            particles.draw(camera.getViewMatrix(), renderer.getProjection(), metrics);
         }
 
         // the two metrics that main is responsible for
@@ -481,24 +505,48 @@ int main() {
                     // remember the user's settings so we can restore them after the batch
                     savedCulling = cullingEnabled;
                     savedSsao = renderer.tuning.ssaoEnabled;
+                    savedInstanced = particles.instanced;
+                    savedParticleCount = particleCount;
                     // build the config list: culling ON/OFF, optionally crossed with SSAO on/off.
-                    // When SSAO is not swept, keep it at the user's current value in both runs, so
-                    // the culling comparison is fair (everything else equal).
+                    // Particles are kept at the user's current values in every run, so the culling
+                    // comparison is fair (only the tested knob changes; everything else equal).
                     experiments.configs.clear();
                     if (sweepSSAO) {
-                        experiments.configs.push_back({ "cullON_ssaoON",   true,  true  });
-                        experiments.configs.push_back({ "cullOFF_ssaoON",  false, true  });
-                        experiments.configs.push_back({ "cullON_ssaoOFF",  true,  false });
-                        experiments.configs.push_back({ "cullOFF_ssaoOFF", false, false });
+                        experiments.configs.push_back({ "cullON_ssaoON",   true,  true,  savedInstanced, savedParticleCount });
+                        experiments.configs.push_back({ "cullOFF_ssaoON",  false, true,  savedInstanced, savedParticleCount });
+                        experiments.configs.push_back({ "cullON_ssaoOFF",  true,  false, savedInstanced, savedParticleCount });
+                        experiments.configs.push_back({ "cullOFF_ssaoOFF", false, false, savedInstanced, savedParticleCount });
                     } else {
-                        experiments.configs.push_back({ "cullON",  true,  savedSsao });
-                        experiments.configs.push_back({ "cullOFF", false, savedSsao });
+                        experiments.configs.push_back({ "cullON",  true,  savedSsao, savedInstanced, savedParticleCount });
+                        experiments.configs.push_back({ "cullOFF", false, savedSsao, savedInstanced, savedParticleCount });
                     }
                     experiments.start(bench, dungeonSeed, Renderer::MAX_SHADOW_LIGHTS);
                     benchStatus = experiments.running()
                         ? ("Running " + std::to_string(experiments.count()) + " experiments (path = "
                            + std::to_string(bench.path().size()) + " keyframes)...")
                         : "Cannot run experiments: record or load a path first";
+                }
+
+                // --- particle instancing sweep: instanced vs naive, everything else equal ---
+                // Measures directly what instancing saves: same path, same culling/SSAO, same
+                // particle count, only the draw strategy changes (1 call vs one call per particle).
+                if (ImGui::Button("Run particle sweep")) {
+                    if (bench.path().seed != dungeonSeed) {
+                        dungeonSeed = bench.path().seed;
+                        buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
+                        firstMouse = true;
+                    }
+                    savedCulling = cullingEnabled;
+                    savedSsao = renderer.tuning.ssaoEnabled;
+                    savedInstanced = particles.instanced;
+                    savedParticleCount = particleCount;
+                    experiments.configs.clear();
+                    experiments.configs.push_back({ "instancedON",  savedCulling, savedSsao, true,  particleCount });
+                    experiments.configs.push_back({ "instancedOFF", savedCulling, savedSsao, false, particleCount });
+                    experiments.start(bench, dungeonSeed, Renderer::MAX_SHADOW_LIGHTS);
+                    benchStatus = experiments.running()
+                        ? ("Running particle sweep (" + std::to_string(particleCount) + " particles)...")
+                        : "Cannot run: record or load a path first";
                 }
                 if (bench.path().empty())
                     ImGui::TextDisabled("(record or load a path first)");
@@ -518,6 +566,17 @@ int main() {
         }
         ImGui::End();
 
+        // --- Particles (M3): instanced sparks/embers, with an instanced-vs-naive A/B ---
+        ImGui::Begin("Particles");
+        ImGui::Checkbox("Enabled", &particles.enabled);
+        ImGui::Checkbox("Instanced (1 draw call)", &particles.instanced);
+        if (ImGui::SliderInt("Count", &particleCount, 0, 8000))
+            particles.setCount(particleCount);
+        ImGui::Text("Particle draw calls this frame: %d", metrics.particleDrawCalls);
+        if (!particles.instanced)
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Naive: one draw call per particle");
+        ImGui::End();
+
         // draw the HUD on top of the scene, then present the frame
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -531,6 +590,7 @@ int main() {
     ImGui::DestroyContext();
     debugDraw.clean();
     renderer.clean();
+    particles.clean();
     glfwTerminate();
     return 0;
 }

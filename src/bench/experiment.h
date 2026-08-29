@@ -19,9 +19,11 @@
 // One configuration to measure. Add more runtime knobs here as they become available (e.g. a
 // shadow-light budget, once that is a runtime value instead of a compile-time constant).
 struct ExperimentConfig {
-    std::string name;   // goes into the CSV file name, and tells the configs apart
-    bool culling;       // frustum culling ON/OFF for this run
-    bool ssao;          // SSAO ON/OFF for this run
+    std::string name;    // goes into the CSV file name, and tells the configs apart
+    bool culling;        // frustum culling ON/OFF for this run
+    bool ssao;           // SSAO ON/OFF for this run
+    bool instanced;      // particles drawn instanced (1 call) vs naive (1 call per particle)
+    int  particleCount;  // number of particles for this run
 };
 
 class ExperimentRunner {

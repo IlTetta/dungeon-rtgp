@@ -77,6 +77,7 @@ public:
         // column header
         csv_ << "frame,tMs,frame_ms,fps_smoothed,draw_calls,objects_total,objects_culled,"
                 "triangles,lights_active,shadow_lights,shadow_passes,fog_steps,"
+                "particles,particle_draw_calls,"
                 "cam_x,cam_y,cam_z,yaw,pitch\n";
 
         replayTimeMs_ = 0.0f;
@@ -162,6 +163,8 @@ private:
              << m.shadowLights << ","
              << m.shadowPasses << ","
              << m.fogSteps << ","
+             << m.particlesDrawn << ","
+             << m.particleDrawCalls << ","
              << camera.Position.x << "," << camera.Position.y << "," << camera.Position.z << ","
              << camera.Yaw << "," << camera.Pitch << "\n";
     }
