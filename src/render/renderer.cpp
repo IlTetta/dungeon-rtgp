@@ -880,6 +880,12 @@ void Renderer::renderFog(const Scene& scene, const glm::vec3& eye, const glm::ma
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
     glEnable(GL_DEPTH_TEST);
+
+    // The fog composited COLOR onto the screen, but the scene DEPTH is still only in sceneFBO. Copy
+    // it onto the default framebuffer so anything drawn to the screen after render() returns - the
+    // fire particles, the debug frustum wireframe - depth-tests against the real scene again (before
+    // the fog pass existed, render() left the scene depth on the screen and they relied on that).
+    sceneFBO.blitDepthToScreen(viewportWidth, viewportHeight);
 }
 
 void Renderer::clean() {

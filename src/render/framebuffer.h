@@ -67,6 +67,18 @@ public:
     int getWidth() const { return width; }
     int getHeight() const { return height; }
 
+    // Copy this framebuffer's DEPTH buffer into the default framebuffer (id 0), scaled to the given
+    // screen size. Used so things drawn straight to the screen AFTER an off-screen pass (e.g. the
+    // particle sparks / debug overlays drawn after the fog composite, which reads this FBO) can
+    // still depth-test against this framebuffer's scene depth. Leaves the default framebuffer bound.
+    void blitDepthToScreen(int screenWidth, int screenHeight) const {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBlitFramebuffer(0, 0, width, height, 0, 0, screenWidth, screenHeight,
+                          GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
 private:
     GLuint fbo = 0;
     GLuint colorTex = 0;
