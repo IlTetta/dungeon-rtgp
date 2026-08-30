@@ -467,14 +467,15 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     int numShadowLights = 0;
 
     // keep shadowWeight/lightWeight in sync with the scene - a dungeon regenerate can change
-    // how many lights exist, in which case there's no "old" fade to continue. Starting at 1.0,
-    // not 0: a freshly (re)generated scene isn't transitioning FROM anything, so every light
-    // should just appear lit immediately - the fade is meant to hide a light LOSING its slot
-    // mid-game, not to delay one gaining it for the first time.
+    // how many lights exist, in which case there's no "old" fade to continue, starting at 0 is
+    // correct: gaining a slot is instant regardless (see the ramp loops below), and a nonzero
+    // weight here means "still fading, protect this slot" - a fresh light has nothing to
+    // protect, and starting it at 1 let far-away lights squat the whole budget ahead of the
+    // genuinely nearest ones (see stillFading below).
     if (shadowWeight.size() != scene.lights.size())
-        shadowWeight.assign(scene.lights.size(), 1.0f);
+        shadowWeight.assign(scene.lights.size(), 0.0f);
     if (lightWeight.size() != scene.lights.size())
-        lightWeight.assign(scene.lights.size(), 1.0f);
+        lightWeight.assign(scene.lights.size(), 0.0f);
 
     float now = (float)glfwGetTime();
     float dt = (lastFrameTime < 0.0f) ? 0.0f : (now - lastFrameTime);   // first frame: no fade yet
@@ -541,18 +542,17 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         numShadowLights++;
     }
 
-    // ramp shadowWeight toward 1 for every light with a slot this frame, toward 0 for every
-    // other castsShadow light - turns "gained/lost a slot" into a fade over
-    // shadowFadeSeconds instead of an instant pop.
+    // Fade only applies to LOSING a slot. A torch was already burning before it got a slot,
+    // so there's nothing to fade in - gaining one is instant. Losing one still ramps down over
+    // shadowFadeSeconds, so budget churn reads as a graceful dim instead of a pop.
     float fadeStep = (tuning.shadowFadeSeconds > 0.0f) ? (dt / tuning.shadowFadeSeconds) : 1.0f;
     for (int idx : shadowCandidates) {
         bool active = false;
         for (int k = 0; k < numShadowLights; ++k) if (shadowLightIndex[k] == idx) { active = true; break; }
-        float target = active ? 1.0f : 0.0f;
-        if (target > shadowWeight[idx])
-            shadowWeight[idx] = std::min(target, shadowWeight[idx] + fadeStep);
+        if (active)
+            shadowWeight[idx] = 1.0f;
         else
-            shadowWeight[idx] = std::max(target, shadowWeight[idx] - fadeStep);
+            shadowWeight[idx] = std::max(0.0f, shadowWeight[idx] - fadeStep);
     }
 
     // a SPOT slot costs 1 depth pass, a POINT slot costs 6 (one per cubemap face)
@@ -657,11 +657,11 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     }
 
     // Gotcha: a light dropped from "D" the instant it's no longer near enough would still pop,
-    // because a light only fades visibly while it HAS a uniform slot - ramping lightWeight
-    // toward 0 in C++ does nothing once the light has no slot to put that value into. So any
-    // light still mid-fade (lightWeight > 0) that isn't in D keeps ITS slot until the fade
-    // actually finishes; a newly-nearest light only takes a slot once one frees up (imperceptible
-    // delay at ~0.3s fades). This mirrors the shadow-caster pattern above, plus this extra step.
+    // since a light only fades visibly while it HAS a uniform slot. So any light still mid-fade
+    // (lightWeight > 0) that isn't in D keeps its slot until the fade actually finishes. This
+    // relies on weight starting at 0 for a fresh light (see above) - anything that starts it
+    // nonzero for lights with no real slot to protect lets stillFading balloon and crowd out D
+    // entirely, which is exactly the bug that used to starve genuinely-nearby lights here.
     std::vector<int> stillFading;
     for (int idx : nonShadowCandidates) {
         if (lightWeight[idx] <= 0.0f) continue;
@@ -685,26 +685,22 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         shadeLightIndex[lightCount++] = idx;
     metrics.activeLights = lightCount;
 
-    // ramp lightWeight toward 1 for everything that got a slot this frame, toward 0 for every
-    // other non-shadow-forced light - same fade-in/fade-out shape as shadowWeight above.
+    // Same "instant on, faded off" shape as shadowWeight above - a torch already burning gets
+    // its shading slot back immediately, losing one still fades out over lightFadeSeconds.
     float lightFadeStep = (tuning.lightFadeSeconds > 0.0f) ? (dt / tuning.lightFadeSeconds) : 1.0f;
     for (int idx : nonShadowCandidates) {
         bool active = std::find(chosenLights.begin(), chosenLights.end(), idx) != chosenLights.end();
-        float target = active ? 1.0f : 0.0f;
-        if (target > lightWeight[idx])
-            lightWeight[idx] = std::min(target, lightWeight[idx] + lightFadeStep);
+        if (active)
+            lightWeight[idx] = 1.0f;
         else
-            lightWeight[idx] = std::max(target, lightWeight[idx] - lightFadeStep);
+            lightWeight[idx] = std::max(0.0f, lightWeight[idx] - lightFadeStep);
     }
-    // A light that IS a forced shadow-caster right now is missing from nonShadowCandidates
-    // above, so without this its lightWeight would never move and could go stale (e.g. stuck
-    // at its initial value if it's been a caster since it first came into range). Its own
-    // brightness bypasses lightWeight while forced (hasShadow -> lw = 1.0 below), which hid the
-    // staleness right up until it lost its shadow slot: hasShadow flips false and lw suddenly
-    // reads whatever was frozen in there - an instant drop, then a fresh climb back up. Keeping
-    // it ramped toward 1 the whole time means there's nothing stale to fall back to.
+    // A forced shadow-caster is missing from nonShadowCandidates above, so without this its
+    // lightWeight would go stale while its own brightness bypasses it (hasShadow -> lw = 1.0
+    // below) - only surfacing the moment it loses its shadow slot and lw suddenly reads
+    // whatever was frozen in there. Pin it to 1 the whole time so there's nothing stale left.
     for (int idx : chosen)
-        lightWeight[idx] = std::min(1.0f, lightWeight[idx] + lightFadeStep);
+        lightWeight[idx] = 1.0f;
 
     // Torches flicker over time instead of being static: a sum of two sines at different
     // frequencies (less mechanical than one), phase-shifted per light so they don't pulse in

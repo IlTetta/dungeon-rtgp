@@ -75,10 +75,11 @@ public:
         // How forgiving the shadow-caster selection is about swapping lights as the player
         // moves: a light that already has a slot keeps it as long as it stays within
         // shadowHysteresisMargin of the cutoff distance, instead of popping out the instant
-        // something else edges closer; shadowFadeSeconds is how long a shadow takes to ramp
-        // fully in/out when it does enter/leave its slot. Every light in the dungeon is a
-        // POINT, shadow-casting light (see dungeon_geometry.h / props.h), so it's normal to
-        // have 6-10+ candidates within a few units of the player against a budget of
+        // something else edges closer; shadowFadeSeconds is how long a shadow takes to fade
+        // out once it does lose its slot (gaining one back is instant - the torch was already
+        // burning, there's nothing to fade in). Every light in the dungeon is a POINT,
+        // shadow-casting light (see dungeon_geometry.h / props.h), so it's normal to have
+        // 6-10+ candidates within a few units of the player against a budget of
         // MAX_SHADOW_LIGHTS real shadows - margin/fade keep that ranking churn from reading
         // as a flicker.
         float shadowHysteresisMargin = 1.6f;
@@ -107,10 +108,10 @@ public:
         // "milky" look, too low makes the fog invisible in a small room. 0.02 reads as a
         // light haze at normal room distances.
         float fogDensity     = 0.02f;    // higher = thicker fog, opaque sooner
-        // How much nearby torches light up the fog. In a big room the ray marches much
-        // farther and passes closer to more torches, so this accumulates fast - kept low so
-        // it stays a local glow around a torch instead of washing out the whole room.
-        float fogScatter     = 0.18f;    // how strongly nearby torches light up the fog
+        // How much nearby torches light up the fog. In a big room, or with several torches
+        // close together, the ray passes near enough lights for long enough that this adds up
+        // fast - kept low so it reads as a local glow, not a wash over the whole room.
+        float fogScatter     = 0.1f;    // how strongly nearby torches light up the fog
         float fogMaxDistance = 40.0f;    // world units: march no farther than this
         // Ray march sample count: quality/cost knob, and the one the "fog steps vs fps"
         // benchmark experiment dials up/down. 12 is the default because 24 measured a real
@@ -215,17 +216,18 @@ private:
     int viewportHeight;
 
     // Per-scene-light fade weight (0 = no shadow effect, 1 = full), indexed the same way as
-    // Scene::lights - persists ACROSS frames (unlike everything else in renderInternal,
-    // recomputed from scratch every frame) so a light's shadow can ramp in/out instead of
-    // popping. Reset to all-0 whenever its size no longer matches scene.lights.size() (the
-    // dungeon was regenerated, so there is no "old" light to continue a fade from).
+    // Scene::lights - persists ACROSS frames so a light's shadow can fade out instead of
+    // popping when it loses its slot (gaining one is instant, see renderInternal). Reset to
+    // all-0 whenever its size no longer matches scene.lights.size() - a nonzero weight means
+    // "still fading, protect this slot", which a brand new light has no business claiming.
     std::vector<float> shadowWeight;
 
     // Same idea for the SHADING selection (which lights get a uniform slot / contribute light
     // at all): indexed like scene.lights, persists across frames. A light not forced in as a
-    // shadow-caster ramps toward 1 while it holds a shading slot, toward 0 once it doesn't -
-    // and keeps its slot until this reaches 0 (see the "gotcha" note in renderInternal), so a
-    // torch fades out instead of vanishing when the player walks into a torch-dense area.
+    // shadow-caster snaps to 1 the instant it holds a shading slot, ramps toward 0 once it
+    // doesn't - and keeps its slot until this reaches 0 (see the "gotcha" note in
+    // renderInternal), so a torch fades out instead of vanishing when the player walks into a
+    // torch-dense area.
     std::vector<float> lightWeight;
 
     // Wall-clock time (glfwGetTime()) at the end of the previous renderInternal() call, so we
