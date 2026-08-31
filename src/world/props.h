@@ -109,14 +109,18 @@ struct LightingParams {
     float torchRadius    = 5.0f;   // in TILES (world radius = torchRadius * tileSize)
 };
 
-// Live-update the torch lights from the current params (no rebuild needed for brightness / reach /
-// color). Torches are tagged with Light::isTorch, so room lights are left untouched.
+// Live-update the fire lights from the current params (no rebuild needed for brightness / reach /
+// color). The COLOR slider applies to every fire (torches AND braziers), so recolouring also tints
+// their flame particles (which read Light::color); brightness/reach only tune the torches, so the
+// braziers keep their own brighter, wider glow.
 inline void applyTorchLightTuning(Scene& scene, const LightingParams& lp, float tileSize) {
     for (Light& L : scene.lights) {
-        if (!L.isTorch) continue;
-        L.intensity = lp.torchIntensity;
-        L.radius    = lp.torchRadius * tileSize;
-        L.color     = lp.torchColor;
+        if (!L.isFire) continue;
+        L.color = lp.torchColor;              // colour: torches + braziers
+        if (L.isTorch) {                      // brightness / reach: torches only
+            L.intensity = lp.torchIntensity;
+            L.radius    = lp.torchRadius * tileSize;
+        }
     }
 }
 

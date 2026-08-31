@@ -95,13 +95,19 @@ public:
         for (int i = 0; i < n; i++) {
             const Particle& p = particles[i];
             float t = p.life / p.maxLife;                              // 1 at birth -> 0 at death
-            // fire gradient: hot yellow-white when young (at the base), deep orange/red when old
-            glm::vec3 hot  = glm::vec3(1.0f, 0.9f, 0.55f);
-            glm::vec3 cold = glm::vec3(0.85f, 0.20f, 0.05f);
-            // multiply by the flame's flicker so the whole fire pulses in step with its light
-            float fl = (p.emitterIdx >= 0 && p.emitterIdx < (int)emitters.size())
-                     ? emitters[p.emitterIdx].flicker : 1.0f;
-            glm::vec3 col  = glm::mix(cold, hot, t) * (p.bright * fl);
+            // The fire takes its HUE from the emitter's light colour (recolouring a torch recolours
+            // its flame), but keeps a fire SHAPE: near-white hot core when young (at the base), the
+            // saturated light hue when old (at the tip). We normalise the light colour to its
+            // brightest channel first, so only the hue tints - the brightness comes from the fire.
+            // The flicker multiply keeps the whole flame pulsing in step with its light.
+            bool  hasEm = (p.emitterIdx >= 0 && p.emitterIdx < (int)emitters.size());
+            float fl    = hasEm ? emitters[p.emitterIdx].flicker : 1.0f;
+            glm::vec3 tint = hasEm ? emitters[p.emitterIdx].color : glm::vec3(1.0f, 0.8f, 0.5f);
+            float m = tint.r; if (tint.g > m) m = tint.g; if (tint.b > m) m = tint.b;
+            tint /= (m > 0.001f ? m : 0.001f);                         // hue only (brightest channel -> 1)
+            glm::vec3 hotCore = glm::mix(glm::vec3(1.0f), tint, 0.35f); // young base: near white, slight hue
+            glm::vec3 coolTip = tint * 0.55f;                          // old tip: the hue, darker
+            glm::vec3 col = glm::mix(coolTip, hotCore, t) * (p.bright * fl);
             float a  = t;                                             // brightest young, fading as it rises
             float sz = p.size * (0.5f + 0.5f * t);                    // taper: narrower as it ages
             gpu[i].center    = p.pos;
@@ -184,6 +190,7 @@ private:
         glm::vec3 pos;
         float scale;
         float flicker = 1.0f;   // current brightness multiplier (synced with the light, see update)
+        glm::vec3 color = glm::vec3(1.0f, 0.8f, 0.5f);   // the light's colour, used to tint the flame
     };
 
     void setupGL() {
@@ -230,6 +237,7 @@ private:
             if (!L.isFire) continue;   // only real fires (torches/braziers) spawn particles
             Emitter em;
             em.pos = L.position;
+            em.color = L.color;   // tint the flame with the light's colour (live from the Lighting panel)
             if (L.isTorch) {
                 em.pos.y += 0.10f;   // raise the flame to the torch head
                 em.scale = 1.0f;
