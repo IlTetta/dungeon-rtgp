@@ -218,10 +218,12 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
         L.radius = lp.torchRadius * t;
         L.isTorch = true;                                      // tunable from the Lighting window
         L.isFire = true;                                       // a torch flame -> particles spawn here
-        // A torch flame radiates in ALL directions, so it's a POINT light with a cubemap shadow:
-        // that shadows the floor AND the walls (a single SPOT cone could only cover one of them).
-        // Costs 6 depth passes vs 1 for a SPOT, but the renderer only shadows the nearest few.
-        L.type = LIGHT_POINT;
+        // A wall torch throws its light INTO the room, so it's a SPOT: one wide (100 deg),
+        // down-tilted cone aimed off the wall (Light::direction) covers the floor and the props in
+        // front of it - exactly where its shadows matter; the wall behind it needs none. Its shadow
+        // is a 2D map = 1 depth pass, versus 6 for a POINT cubemap, so most of the dungeon's shadow
+        // cost drops. (Braziers stay POINT: an open floor fire really is omnidirectional.)
+        L.type = LIGHT_SPOT;
         L.castsShadow = true;
         L.direction = glm::normalize(n + glm::vec3(0.0f, -lp.coneTilt, 0.0f));
         scene.lights.push_back(L);

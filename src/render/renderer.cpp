@@ -108,13 +108,14 @@ void Renderer::initShadowMaps() {
 
 glm::mat4 Renderer::computeLightSpaceMatrix(const Light& light) const {
     // Perspective, not orthographic: a torch's shadow only needs to cover the cone it is
-    // aimed into. 100 degrees is a reasonable indoor cone for a wall-mounted torch; near/far
-    // follow the light's own attenuation radius, so shadow-map precision and light
-    // attenuation stay consistent with each other.
+    // aimed into. 120 degrees is a wide indoor cone for a wall-mounted torch - wide enough that a
+    // prop edging up to the SIDE of a torch keeps its shadow (a narrower cone dropped it while the
+    // omnidirectional lighting still lit it). near/far follow the light's own attenuation radius, so
+    // shadow-map precision and light attenuation stay consistent with each other.
     float nearPlane = 0.05f;
     float farPlane = (light.radius > nearPlane) ? light.radius : (nearPlane + 1.0f);
 
-    glm::mat4 lightProjection = glm::perspective(glm::radians(100.0f), 1.0f, nearPlane, farPlane);
+    glm::mat4 lightProjection = glm::perspective(glm::radians(120.0f), 1.0f, nearPlane, farPlane);
 
     // "up" for lookAt() cannot be parallel to the look direction. Torches are aimed roughly
     // horizontally, so world-up is safe; a torch aimed straight up/down would need a fallback.
