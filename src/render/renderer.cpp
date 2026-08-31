@@ -34,6 +34,16 @@ Renderer::Renderer(const char* vertexPath, const char* fragmentPath)
 
     initShadowMaps();
     initSSAO();
+
+    // How many texture units the fragment shader can sample - this caps how big the shadow budget
+    // can grow (MAX_SPOT_SHADOWS + MAX_POINT_SHADOWS + albedo + SSAO must all fit). GL 4.1 only
+    // guarantees >= 16, but real GPUs usually report 32. Printed once so we know the real ceiling.
+    GLint maxTexUnits = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &maxTexUnits);
+    std::cout << "GL_MAX_TEXTURE_IMAGE_UNITS = " << maxTexUnits
+              << "  (shadow color pass uses " << (MAX_SPOT_SHADOWS + MAX_POINT_SHADOWS + 2)
+              << ": " << MAX_SPOT_SHADOWS << " spot + " << MAX_POINT_SHADOWS << " point + albedo + ssao)"
+              << std::endl;
 }
 
 void Renderer::initShadowMaps() {

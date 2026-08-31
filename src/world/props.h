@@ -376,13 +376,26 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
         }
 
         // -------- normal room --------
-        // central brazier: gives the room's base POINT light (from dungeon_geometry, at this spot) a
-        // visible body. MAT_DECOR so it doesn't self-shadow / block the player.
-        addPropInstance(scene, brazier, floorModel(brazier, cx, cz, rf(0.0f, 6.28f), 1.0f), MAT_DECOR);
-        reserve(occ, cx, cz, 0.7f);
-        // the central brazier is its own light source now (there are no per-room fill lights any
-        // more): a warm POINT light + fire, at the bowl. Same values the room fill light used to have.
-        addLight(cx, 1.2f, cz);
+        // Braziers = the room's POINT lights, and the only shadow-casting POINT lights (budget
+        // MAX_POINT_SHADOWS = 2, see renderer.h). At most 2 per room, spread out: a small room gets
+        // one central brazier, a big room gets two along its longer axis, so both the light and the
+        // "2 nearest braziers cast shadows" selection stay evenly distributed as you cross the room
+        // instead of clustering in one spot. MAT_DECOR (no self-shadow / doesn't block the player);
+        // each gets its warm POINT light + fire via addLight (castsShadow = true).
+        if (area >= 60) {
+            float roomW = room.w * t, roomH = room.h * t;
+            glm::vec2 b0, b1;
+            if (roomW >= roomH) { b0 = glm::vec2(cx - roomW * 0.22f, cz); b1 = glm::vec2(cx + roomW * 0.22f, cz); }
+            else                { b0 = glm::vec2(cx, cz - roomH * 0.22f); b1 = glm::vec2(cx, cz + roomH * 0.22f); }
+            addPropInstance(scene, brazier, floorModel(brazier, b0.x, b0.y, rf(0.0f, 6.28f), 1.0f), MAT_DECOR);
+            reserve(occ, b0.x, b0.y, 0.7f);  addLight(b0.x, 1.2f, b0.y);
+            addPropInstance(scene, brazier, floorModel(brazier, b1.x, b1.y, rf(0.0f, 6.28f), 1.0f), MAT_DECOR);
+            reserve(occ, b1.x, b1.y, 0.7f);  addLight(b1.x, 1.2f, b1.y);
+        }
+        else {
+            addPropInstance(scene, brazier, floorModel(brazier, cx, cz, rf(0.0f, 6.28f), 1.0f), MAT_DECOR);
+            reserve(occ, cx, cz, 0.7f);  addLight(cx, 1.2f, cz);
+        }
 
         // colonnade along the two side walls of big rooms (fixed positions -> reserved)
         if (room.w >= 6 && room.h >= 6) {
@@ -393,17 +406,6 @@ inline void addProps(Scene& scene, const Dungeon& dungeon, const DungeonParams& 
                 float lx = (room.x + 1.2f) * t, rx = (room.x + room.w - 1.2f) * t;
                 addPropInstance(scene, column, columnModel(lx, zline, 0.0f));  reserve(occ, lx, zline, footprintRadius(column));
                 addPropInstance(scene, column, columnModel(rx, zline, 0.0f));  reserve(occ, rx, zline, footprintRadius(column));
-            }
-        }
-
-        // big rooms: two extra braziers (each a POINT light), in free spots
-        if (area >= 60) {
-            for (int b = 0; b < 2; b++) {
-                glm::vec2 spot;
-                if (findSpot(occ, room, 0.7f, spot)) {
-                    addPropInstance(scene, brazier, floorModel(brazier, spot.x, spot.y, rf(0.0f, 6.28f), 1.0f), MAT_DECOR);
-                    addLight(spot.x, 1.2f, spot.y);
-                }
             }
         }
 
