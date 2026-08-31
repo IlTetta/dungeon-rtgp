@@ -129,27 +129,23 @@ public:
 
     // How many lights cast a REAL shadow at once, split by TYPE because the two kinds cost very
     // differently and a room has many more torches than braziers: torches are SPOT lights with a
-    // cheap 2D shadow map (1 depth pass), braziers are POINT lights with a 6-face cubemap. The SPOT
-    // budget is sized to cover a WHOLE room's torches at once, so all of a room's shadows are on
-    // while you stand anywhere in it (not only when you walk up to a prop); the small POINT budget
-    // matches the (max 2) braziers per room. Within each type, lights are ranked nearest-to-camera;
-    // one that doesn't make the cut falls back to unshadowed - never a crash. Sized generously so
-    // that, in a dense area, the current room AND the torches of the corridor/room you're walking
-    // into are all covered, so shadows are simply already there instead of popping in.
+    // cheap 2D shadow map (1 depth pass), braziers are POINT lights with a 6-face cubemap. Within
+    // each type, the nearest MAX_SPOT_SHADOWS / MAX_POINT_SHADOWS lights to the camera cast a shadow;
+    // one that drops out fades over shadowFadeSeconds instead of popping. A light that never makes
+    // the cut falls back to unshadowed - never a crash.
     //
     // Texture-unit note: the color pass binds MAX_SPOT_SHADOWS 2D maps + MAX_POINT_SHADOWS cubemaps
-    // + albedo + SSAO = 24 units. GL 4.1 only GUARANTEES 16, so this needs a GPU reporting >= 24
-    // (real GPUs report 32 - we print GL_MAX_TEXTURE_IMAGE_UNITS at startup). To scale past the unit
-    // count entirely you'd move the shadow maps into texture ARRAYS (one unit each).
-    // These MUST match "#define MAX_SPOT_SHADOWS / MAX_POINT_SHADOWS" in shaders/ggx.frag.
-    static const int MAX_SPOT_SHADOWS  = 20;  // SPOT (torch) 2D maps
+    // + albedo + SSAO = 12 units, well under the GL 4.1 minimum of 16 (we print the real limit,
+    // GL_MAX_TEXTURE_IMAGE_UNITS, at startup). To push the budget much higher you'd hit the per-unit
+    // limit and would move the shadow maps into texture ARRAYS - one unit per type instead of one
+    // per slot. These MUST match "#define MAX_SPOT_SHADOWS / MAX_POINT_SHADOWS" in shaders/ggx.frag.
+    static const int MAX_SPOT_SHADOWS  = 8;   // SPOT (torch) 2D maps
     static const int MAX_POINT_SHADOWS = 2;   // POINT (brazier) cubemaps
     static const int MAX_SHADOW_LIGHTS = MAX_SPOT_SHADOWS + MAX_POINT_SHADOWS;   // total casters
 
-    // Resolution of a SPOT light's 2D shadow map (square). 1024 is the usual starting point
-    // for an indoor scene at this scale; if PCF edges look too blocky up close, or perf needs
-    // it to go down, this is the one number to tune.
-    static const int SHADOW_MAP_SIZE = 1024;
+    // Resolution of a SPOT light's 2D shadow map (square). 512 keeps them cheap and a touch softer
+    // at this scale (down from 1024); raise it if PCF edges look too blocky up close.
+    static const int SHADOW_MAP_SIZE = 512;
 
     // Resolution of ONE FACE of a POINT light's cubemap shadow. Smaller than SHADOW_MAP_SIZE
     // on purpose: a cubemap is 6 of these per light, so the total texel budget per point-

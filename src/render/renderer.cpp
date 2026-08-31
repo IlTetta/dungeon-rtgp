@@ -455,14 +455,14 @@ void Renderer::render(const Scene& scene, Camera& camera, FrameMetrics& metrics)
 }
 
 void Renderer::renderSpectator(const Scene& scene, const glm::mat4& view, const glm::vec3& eye,
-                               const Frustum& cullFrustum, bool hideCeiling, FrameMetrics& metrics) {
+    const Frustum& cullFrustum, bool hideCeiling, FrameMetrics& metrics) {
     // Debug path: draw from `view`/`eye` (the far spectator camera) but cull against the
     // frozen `cullFrustum` we were handed (the player's). Same drawing core as render().
     renderInternal(scene, view, eye, cullFrustum, hideCeiling, metrics);
 }
 
 void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const glm::vec3& eye,
-                              const Frustum& cullFrustum, bool hideCeiling, FrameMetrics& metrics) {
+    const Frustum& cullFrustum, bool hideCeiling, FrameMetrics& metrics) {
     metrics.drawCalls = 0;
     metrics.trianglesDrawn = 0;
     metrics.objectsTotal = (int)scene.objects.size();
@@ -507,38 +507,15 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         glm::vec3 da = scene.lights[a].position - eye;
         glm::vec3 db = scene.lights[b].position - eye;
         return glm::dot(da, da) < glm::dot(db, db);   // squared distance: avoids sqrt() calls
-    };
+        };
     std::sort(spotCandidates.begin(), spotCandidates.end(), byDistToEye);
     std::sort(pointCandidates.begin(), pointCandidates.end(), byDistToEye);
 
-    // Nearest-`budget` from a (sorted) candidate list, with the same margin-hysteresis as before:
-    // an already-active caster (shadowWeight > 0) keeps its slot while within shadowHysteresisMargin
-    // of the cutoff, evicting the farthest non-retained slot, so ranking churn near the boundary
-    // reads as a graceful hold instead of a flicker.
+    // Pick the nearest N of each type, where N is the type's budget. The rest fade out (see below).
     auto pickCasters = [&](const std::vector<int>& cands, int budget) {
-        std::vector<int> chosen(cands.begin(),
+        return std::vector<int>(cands.begin(),
             cands.begin() + std::min((size_t)budget, cands.size()));
-        if ((int)cands.size() > budget && !chosen.empty()) {
-            glm::vec3 dCut = scene.lights[chosen.back()].position - eye;
-            float cutoff2 = glm::dot(dCut, dCut);
-            float margin2 = cutoff2 * tuning.shadowHysteresisMargin * tuning.shadowHysteresisMargin;
-            for (size_t i = budget; i < cands.size(); ++i) {
-                int cand = cands[i];
-                if (shadowWeight[cand] <= 0.0f) continue;   // was not active: nothing to protect
-                glm::vec3 d = scene.lights[cand].position - eye;
-                if (glm::dot(d, d) > margin2) continue;      // too far even with the margin
-                int victim = -1; float victim2 = -1.0f;      // evict the farthest non-retained member
-                for (size_t k = 0; k < chosen.size(); ++k) {
-                    if (shadowWeight[chosen[k]] > 0.0f) continue;
-                    glm::vec3 dv = scene.lights[chosen[k]].position - eye;
-                    float dv2 = glm::dot(dv, dv);
-                    if (dv2 > victim2) { victim2 = dv2; victim = (int)k; }
-                }
-                if (victim >= 0) chosen[victim] = cand;
-            }
-        }
-        return chosen;
-    };
+        };
     std::vector<int> chosenSpot  = pickCasters(spotCandidates,  MAX_SPOT_SHADOWS);
     std::vector<int> chosenPoint = pickCasters(pointCandidates, MAX_POINT_SHADOWS);
 

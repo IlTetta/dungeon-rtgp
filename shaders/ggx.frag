@@ -39,7 +39,7 @@ uniform float lightRadii[MAX_LIGHTS];
 // Shadow casters are split by type: SPOT (torch) 2D maps and POINT (brazier) cubemaps have
 // separate budgets (must match MAX_SPOT_SHADOWS / MAX_POINT_SHADOWS in renderer.h). lightShadowSlot
 // is the slot WITHIN the light's own type's array; lightShadowIsPoint says which array to read.
-#define MAX_SPOT_SHADOWS 20
+#define MAX_SPOT_SHADOWS 8
 #define MAX_POINT_SHADOWS 2
 uniform int lightShadowSlot[MAX_LIGHTS];
 uniform bool lightShadowIsPoint[MAX_LIGHTS];
