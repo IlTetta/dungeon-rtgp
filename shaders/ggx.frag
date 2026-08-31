@@ -36,16 +36,20 @@ uniform float lightRadii[MAX_LIGHTS];
 
 // per-light shadow slot: -1 = no shadow (fully lit), otherwise which shadow map/cubemap and
 // whether it's a SPOT (2D) or POINT (cubemap) one.
-#define MAX_SHADOW_LIGHTS 6
+// Shadow casters are split by type: SPOT (torch) 2D maps and POINT (brazier) cubemaps have
+// separate budgets (must match MAX_SPOT_SHADOWS / MAX_POINT_SHADOWS in renderer.h). lightShadowSlot
+// is the slot WITHIN the light's own type's array; lightShadowIsPoint says which array to read.
+#define MAX_SPOT_SHADOWS 8
+#define MAX_POINT_SHADOWS 2
 uniform int lightShadowSlot[MAX_LIGHTS];
 uniform bool lightShadowIsPoint[MAX_LIGHTS];
-// fade weight (0..1) so a shadow ramps in/out over a fraction of a second instead of
-// snapping the instant a light gets/loses its slot.
+// fade weight (0..1) so a shadow ramps out over a fraction of a second instead of snapping the
+// instant a light loses its slot.
 uniform float lightShadowWeight[MAX_LIGHTS];
 
-uniform mat4 lightSpaceMatrices[MAX_SHADOW_LIGHTS];   // SPOT slots only (proj * view of the light)
-uniform sampler2D shadowMaps[MAX_SHADOW_LIGHTS];       // SPOT: 2D depth maps
-uniform samplerCube pointShadowMaps[MAX_SHADOW_LIGHTS]; // POINT: cubemaps storing world distance
+uniform mat4 lightSpaceMatrices[MAX_SPOT_SHADOWS];      // SPOT slots (proj * view of the light)
+uniform sampler2D shadowMaps[MAX_SPOT_SHADOWS];        // SPOT: 2D depth maps
+uniform samplerCube pointShadowMaps[MAX_POINT_SHADOWS]; // POINT: cubemaps storing world distance
 
 const float PI = 3.14159265359;
 
@@ -157,9 +161,9 @@ void main() {
         vec3 radiance = lightColors[i] * lightIntensities[i] * atten;
 
         float shadow = 0.0;
-        int slot = lightShadowSlot[i];
-        if (slot >= 0 && slot < MAX_SHADOW_LIGHTS) {
-            if (lightShadowIsPoint[i]) {
+        int slot = lightShadowSlot[i];   // index within this light's own type's shadow array
+        if (slot >= 0) {
+            if (lightShadowIsPoint[i] && slot < MAX_POINT_SHADOWS) {
                 // distance-based cubemap test, PCF-softened over the 20 offsets above
                 vec3 offsetFragPos = FragPos + N * pointNormalOffset;
                 vec3 fragToLight = offsetFragPos - lightPositions[i];
@@ -176,10 +180,10 @@ void main() {
                     shadow += (currentDist - bias > closestDist) ? 1.0 : 0.0;
                 }
                 shadow /= 20.0;
-            } else {
+            } else if (!lightShadowIsPoint[i] && slot < MAX_SPOT_SHADOWS) {
                 shadow = shadowPCF(lightSpaceMatrices[slot], shadowMaps[slot], N, L);
             }
-            shadow *= lightShadowWeight[i];   // fade in/out instead of snapping
+            shadow *= lightShadowWeight[i];   // fade out instead of snapping
         }
 
         Lo += (1.0 - shadow) * (diffuse + specular) * radiance * NdotL;

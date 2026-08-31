@@ -127,21 +127,18 @@ public:
     // job for a later milestone, not for basic forward rendering.
     static const int MAX_LIGHTS = 32;
 
-    // How many lights can cast a REAL shadow at the same time, and must match
-    // "#define MAX_SHADOW_LIGHTS 6" in shaders/ggx.frag. Fixed budget across the whole game,
-    // not per room: renderInternal() does not just take "the first MAX_SHADOW_LIGHTS in
-    // Scene::lights" - every frame it picks the ones closest to the camera, so real shadows
-    // follow the player from room to room. A light that doesn't make the cut this frame
-    // falls back to unshadowed (same as castsShadow == false) - never a crash. A slot can
-    // hold either a SPOT (2D map) or a POINT (cubemap) shadow, decided per-frame by that
-    // slot's light's Light::type.
-    //
-    // Not the same knob as MAX_LIGHTS below: that one drives much bigger arrays in ggx.frag,
-    // and pushing it from 32 to 64 once blew past GL_MAX_FRAGMENT_UNIFORM_COMPONENTS (see the
-    // light-popping note) - do not raise that one casually. This one only adds a couple of
-    // mat4s and texture units per step, well under the GL 4.1 minimum guaranteed texture
-    // units, so it's safe to raise if the shadow budget ever needs more headroom again.
-    static const int MAX_SHADOW_LIGHTS = 6;
+    // How many lights cast a REAL shadow at once, split by TYPE because the two kinds cost very
+    // differently and a room has many more torches than braziers: torches are SPOT lights with a
+    // cheap 2D shadow map (1 depth pass), braziers are POINT lights with a 6-face cubemap. A
+    // generous SPOT budget + a small POINT budget lets a whole room's worth of shadows be active at
+    // once (a prop's shadow is there as you ENTER the room, not only when you walk up to it), while
+    // the texture units used (MAX_SPOT_SHADOWS 2D maps + MAX_POINT_SHADOWS cubemaps + albedo + SSAO
+    // = 12) stay under the GL 4.1 minimum of 16. Within each type, lights are ranked
+    // nearest-to-camera; one that doesn't make the cut falls back to unshadowed - never a crash.
+    // These MUST match "#define MAX_SPOT_SHADOWS / MAX_POINT_SHADOWS" in shaders/ggx.frag.
+    static const int MAX_SPOT_SHADOWS  = 8;   // SPOT (torch) 2D maps, texture units 0..7
+    static const int MAX_POINT_SHADOWS = 2;   // POINT (brazier) cubemaps, texture units 8..9
+    static const int MAX_SHADOW_LIGHTS = MAX_SPOT_SHADOWS + MAX_POINT_SHADOWS;   // total casters
 
     // Resolution of a SPOT light's 2D shadow map (square). 1024 is the usual starting point
     // for an indoor scene at this scale; if PCF edges look too blocky up close, or perf needs
@@ -239,8 +236,8 @@ private:
     // SPOT (cone) shadows: depth-only shader (shaders/shadowmap.vert/.frag), one FBO + one
     // 2D depth texture per potential shadow-casting slot.
     Shader shadowShader;
-    GLuint shadowFBO[MAX_SHADOW_LIGHTS];
-    GLuint shadowMapTex[MAX_SHADOW_LIGHTS];
+    GLuint shadowFBO[MAX_SPOT_SHADOWS];
+    GLuint shadowMapTex[MAX_SPOT_SHADOWS];
 
     // POINT (cubemap) shadows: a vertex+geometry+fragment shader
     // (shaders/pointshadow.vert/.geom/.frag) that renders all 6 faces of a light's cubemap in
@@ -254,8 +251,8 @@ private:
     // attachment, needs to be an actual texture), reused across slots since they still render
     // one at a time.
     Shader pointShadowShader;
-    GLuint shadowCubeFBO[MAX_SHADOW_LIGHTS];
-    GLuint shadowCubeTex[MAX_SHADOW_LIGHTS];
+    GLuint shadowCubeFBO[MAX_POINT_SHADOWS];
+    GLuint shadowCubeTex[MAX_POINT_SHADOWS];
     GLuint pointShadowDepthCubeTex;
 
     // Create the shadow FBOs + textures (both kinds) once, at startup.

@@ -39,7 +39,7 @@ Renderer::Renderer(const char* vertexPath, const char* fragmentPath)
 void Renderer::initShadowMaps() {
     // SPOT (cone) shadows: one FBO + one 2D depth texture per potential shadow-casting slot,
     // created once at startup and reused every frame.
-    for (int i = 0; i < MAX_SHADOW_LIGHTS; ++i) {
+    for (int i = 0; i < MAX_SPOT_SHADOWS; ++i) {
         glGenFramebuffers(1, &shadowFBO[i]);
 
         glGenTextures(1, &shadowMapTex[i]);
@@ -81,7 +81,7 @@ void Renderer::initShadowMaps() {
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
-    for (int i = 0; i < MAX_SHADOW_LIGHTS; ++i) {
+    for (int i = 0; i < MAX_POINT_SHADOWS; ++i) {
         glGenTextures(1, &shadowCubeTex[i]);
         glBindTexture(GL_TEXTURE_CUBE_MAP, shadowCubeTex[i]);
         for (int face = 0; face < 6; ++face) {
@@ -457,22 +457,21 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     metrics.trianglesDrawn = 0;
     metrics.objectsTotal = (int)scene.objects.size();
 
-    // Pick which torches cast a shadow this frame, and render their depth maps before the
-    // color pass. The number of castsShadow torches can vary a lot while MAX_SHADOW_LIGHTS is
-    // a fixed perf budget, so every frame we pick the ones closest to `eye`, not just the
-    // first ones in Scene::lights - this way real shadows follow the player from room to
-    // room. A light that doesn't make the cut simply falls back to unshadowed.
-    int shadowLightIndex[MAX_SHADOW_LIGHTS];    // -> index into scene.lights
-    bool shadowIsPoint[MAX_SHADOW_LIGHTS];       // Light::type of that slot's light, this frame
-    glm::mat4 lightSpaceMatrices[MAX_SHADOW_LIGHTS];   // SPOT slots only
-    int numShadowLights = 0;
+    // Pick which lights cast a shadow this frame, split by TYPE (torches = SPOT, braziers =
+    // POINT), each type ranked by distance to `eye` against its own budget (MAX_SPOT_SHADOWS /
+    // MAX_POINT_SHADOWS). Splitting them lets a whole room's worth of shadows be active at once,
+    // since a SPOT map is a fraction of a cubemap's cost. A light that doesn't make its type's cut
+    // simply falls back to unshadowed.
+    int spotShadowLightIndex[MAX_SPOT_SHADOWS];
+    int pointShadowLightIndex[MAX_POINT_SHADOWS];
+    glm::mat4 lightSpaceMatrices[MAX_SPOT_SHADOWS];   // SPOT slots only
+    int numSpotShadows = 0;
+    int numPointShadows = 0;
 
-    // keep shadowWeight/lightWeight in sync with the scene - a dungeon regenerate can change
-    // how many lights exist, in which case there's no "old" fade to continue, starting at 0 is
-    // correct: gaining a slot is instant regardless (see the ramp loops below), and a nonzero
-    // weight here means "still fading, protect this slot" - a fresh light has nothing to
-    // protect, and starting it at 1 let far-away lights squat the whole budget ahead of the
-    // genuinely nearest ones (see stillFading below).
+    // keep shadowWeight/lightWeight in sync with the scene - a dungeon regenerate can change how
+    // many lights exist, in which case there's no "old" fade to continue and starting at 0 is
+    // correct: gaining a slot is instant regardless, and a nonzero weight means "still fading,
+    // protect this slot" - a fresh light has nothing to protect.
     if (shadowWeight.size() != scene.lights.size())
         shadowWeight.assign(scene.lights.size(), 0.0f);
     if (lightWeight.size() != scene.lights.size())
@@ -480,93 +479,96 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
 
     float now = (float)glfwGetTime();
     float dt = (lastFrameTime < 0.0f) ? 0.0f : (now - lastFrameTime);   // first frame: no fade yet
-    // Clamp dt before it drives any fade step below. Entering a room can make several new
-    // POINT lights become shadow-casters in the same frame (6 depth passes each), spiking
-    // that frame's real duration - an uncapped dt turns fadeStep = dt/fadeSeconds into a huge
-    // jump for exactly that frame, completing the whole fade in one step. Capping it keeps the
-    // fade spread over several frames even right after a stall.
+    // Clamp dt so a stall (e.g. several new casters lighting up in one frame) can't complete a
+    // whole fade in one huge step - keeps the fade spread over several frames even after a spike.
     dt = std::min(dt, 1.0f / 15.0f);
     lastFrameTime = now;
 
-    // Distance-only ranking, deliberately - NOT weighted by the view frustum. A light's
-    // position doesn't change when you turn your head, so a physically-plausible dungeon
-    // shouldn't either (view-frustum-based ranking made lights reshuffle just from turning in
-    // place, which is worse than a torch two rooms behind you honestly falling out of budget).
-    std::vector<int> shadowCandidates;
+    // Split the shadow-casting lights by type, each list ranked by squared distance to the eye.
+    // Distance only, NOT view direction - a light's position doesn't change when you turn your
+    // head, so view-frustum ranking made lights reshuffle just from turning in place.
+    std::vector<int> spotCandidates, pointCandidates;
     for (size_t i = 0; i < scene.lights.size() && tuning.shadowsEnabled; ++i) {
-        if (scene.lights[i].castsShadow) shadowCandidates.push_back((int)i);
+        if (!scene.lights[i].castsShadow) continue;
+        if (scene.lights[i].type == LIGHT_POINT) pointCandidates.push_back((int)i);
+        else                                     spotCandidates.push_back((int)i);
     }
-    std::sort(shadowCandidates.begin(), shadowCandidates.end(), [&](int a, int b) {
+    auto byDistToEye = [&](int a, int b) {
         glm::vec3 da = scene.lights[a].position - eye;
         glm::vec3 db = scene.lights[b].position - eye;
         return glm::dot(da, da) < glm::dot(db, db);   // squared distance: avoids sqrt() calls
-    });
+    };
+    std::sort(spotCandidates.begin(), spotCandidates.end(), byDistToEye);
+    std::sort(pointCandidates.begin(), pointCandidates.end(), byDistToEye);
 
-    // The strict nearest-K would flicker a light on/off every frame right at the boundary as
-    // the player moves. Instead: start from the strict nearest-K ("chosen"), then let an
-    // already-active light (shadowWeight > 0) keep its slot even if something else has
-    // technically edged closer, as long as it's still within shadowHysteresisMargin of the
-    // cutoff - evicting the farthest slot that isn't itself a retained light, so the slot
-    // count never grows past MAX_SHADOW_LIGHTS.
-    std::vector<int> chosen(shadowCandidates.begin(),
-        shadowCandidates.begin() + std::min((size_t)MAX_SHADOW_LIGHTS, shadowCandidates.size()));
-
-    if ((int)shadowCandidates.size() > MAX_SHADOW_LIGHTS) {
-        glm::vec3 dCutoff = scene.lights[chosen.back()].position - eye;
-        float cutoffDist2 = glm::dot(dCutoff, dCutoff);
-        float marginDist2 = cutoffDist2 * tuning.shadowHysteresisMargin * tuning.shadowHysteresisMargin;
-
-        for (size_t i = MAX_SHADOW_LIGHTS; i < shadowCandidates.size(); ++i) {
-            int cand = shadowCandidates[i];
-            if (shadowWeight[cand] <= 0.0f) continue;   // was not active: nothing to protect
-            glm::vec3 d = scene.lights[cand].position - eye;
-            if (glm::dot(d, d) > marginDist2) continue;   // too far even with the margin
-
-            // evict the farthest member of `chosen` that is not itself a retained light
-            int victimPos = -1;
-            float victimDist2 = -1.0f;
-            for (size_t k = 0; k < chosen.size(); ++k) {
-                if (shadowWeight[chosen[k]] > 0.0f) continue;
-                glm::vec3 dv = scene.lights[chosen[k]].position - eye;
-                float dv2 = glm::dot(dv, dv);
-                if (dv2 > victimDist2) { victimDist2 = dv2; victimPos = (int)k; }
+    // Nearest-`budget` from a (sorted) candidate list, with the same margin-hysteresis as before:
+    // an already-active caster (shadowWeight > 0) keeps its slot while within shadowHysteresisMargin
+    // of the cutoff, evicting the farthest non-retained slot, so ranking churn near the boundary
+    // reads as a graceful hold instead of a flicker.
+    auto pickCasters = [&](const std::vector<int>& cands, int budget) {
+        std::vector<int> chosen(cands.begin(),
+            cands.begin() + std::min((size_t)budget, cands.size()));
+        if ((int)cands.size() > budget && !chosen.empty()) {
+            glm::vec3 dCut = scene.lights[chosen.back()].position - eye;
+            float cutoff2 = glm::dot(dCut, dCut);
+            float margin2 = cutoff2 * tuning.shadowHysteresisMargin * tuning.shadowHysteresisMargin;
+            for (size_t i = budget; i < cands.size(); ++i) {
+                int cand = cands[i];
+                if (shadowWeight[cand] <= 0.0f) continue;   // was not active: nothing to protect
+                glm::vec3 d = scene.lights[cand].position - eye;
+                if (glm::dot(d, d) > margin2) continue;      // too far even with the margin
+                int victim = -1; float victim2 = -1.0f;      // evict the farthest non-retained member
+                for (size_t k = 0; k < chosen.size(); ++k) {
+                    if (shadowWeight[chosen[k]] > 0.0f) continue;
+                    glm::vec3 dv = scene.lights[chosen[k]].position - eye;
+                    float dv2 = glm::dot(dv, dv);
+                    if (dv2 > victim2) { victim2 = dv2; victim = (int)k; }
+                }
+                if (victim >= 0) chosen[victim] = cand;
             }
-            if (victimPos >= 0) chosen[victimPos] = cand;
         }
-    }
+        return chosen;
+    };
+    std::vector<int> chosenSpot  = pickCasters(spotCandidates,  MAX_SPOT_SHADOWS);
+    std::vector<int> chosenPoint = pickCasters(pointCandidates, MAX_POINT_SHADOWS);
 
-    for (int idx : chosen) {
-        shadowLightIndex[numShadowLights] = idx;
-        shadowIsPoint[numShadowLights] = (scene.lights[idx].type == LIGHT_POINT);
-        if (!shadowIsPoint[numShadowLights])
-            lightSpaceMatrices[numShadowLights] = computeLightSpaceMatrix(scene.lights[idx]);
-        numShadowLights++;
+    for (int idx : chosenSpot) {
+        spotShadowLightIndex[numSpotShadows] = idx;
+        lightSpaceMatrices[numSpotShadows] = computeLightSpaceMatrix(scene.lights[idx]);
+        numSpotShadows++;
     }
+    for (int idx : chosenPoint)
+        pointShadowLightIndex[numPointShadows++] = idx;
 
-    // Fade only applies to LOSING a slot. A torch was already burning before it got a slot,
-    // so there's nothing to fade in - gaining one is instant. Losing one still ramps down over
-    // shadowFadeSeconds, so budget churn reads as a graceful dim instead of a pop.
+    // Combined list, SPOTS first then POINTS: the shading selection below places shadow-casters
+    // first, and the per-light shadow uniforms map shading position i < numSpotShadows -> SPOT slot
+    // i, otherwise -> POINT slot (i - numSpotShadows).
+    int shadowLightIndex[MAX_SHADOW_LIGHTS];
+    int numShadowLights = 0;
+    for (int j = 0; j < numSpotShadows;  ++j) shadowLightIndex[numShadowLights++] = spotShadowLightIndex[j];
+    for (int k = 0; k < numPointShadows; ++k) shadowLightIndex[numShadowLights++] = pointShadowLightIndex[k];
+
+    // Fade only applies to LOSING a slot (gaining one is instant - the torch was already burning).
     float fadeStep = (tuning.shadowFadeSeconds > 0.0f) ? (dt / tuning.shadowFadeSeconds) : 1.0f;
-    for (int idx : shadowCandidates) {
-        bool active = false;
-        for (int k = 0; k < numShadowLights; ++k) if (shadowLightIndex[k] == idx) { active = true; break; }
-        if (active)
-            shadowWeight[idx] = 1.0f;
-        else
-            shadowWeight[idx] = std::max(0.0f, shadowWeight[idx] - fadeStep);
-    }
+    auto updateFade = [&](const std::vector<int>& cands, const std::vector<int>& chosen) {
+        for (int idx : cands) {
+            bool active = std::find(chosen.begin(), chosen.end(), idx) != chosen.end();
+            shadowWeight[idx] = active ? 1.0f : std::max(0.0f, shadowWeight[idx] - fadeStep);
+        }
+    };
+    updateFade(spotCandidates,  chosenSpot);
+    updateFade(pointCandidates, chosenPoint);
 
-    // a SPOT slot costs 1 depth pass, a POINT slot costs 6 (one per cubemap face)
+    // render each caster's depth map: SPOT = 1 pass (2D), POINT = 6 (one per cubemap face)
     metrics.shadowLights = numShadowLights;
     metrics.shadowPasses = 0;
-    for (int slot = 0; slot < numShadowLights; ++slot) {
-        if (shadowIsPoint[slot]) {
-            renderPointShadowPass(scene, slot, scene.lights[shadowLightIndex[slot]]);
-            metrics.shadowPasses += 6;
-        } else {
-            renderShadowPass(scene, slot, lightSpaceMatrices[slot]);
-            metrics.shadowPasses += 1;
-        }
+    for (int slot = 0; slot < numSpotShadows; ++slot) {
+        renderShadowPass(scene, slot, lightSpaceMatrices[slot]);
+        metrics.shadowPasses += 1;
+    }
+    for (int slot = 0; slot < numPointShadows; ++slot) {
+        renderPointShadowPass(scene, slot, scene.lights[pointShadowLightIndex[slot]]);
+        metrics.shadowPasses += 6;
     }
 
     // restore the real viewport (the shadow passes above switched it to a shadow-map size)
@@ -700,8 +702,8 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     // lightWeight would go stale while its own brightness bypasses it (hasShadow -> lw = 1.0
     // below) - only surfacing the moment it loses its shadow slot and lw suddenly reads
     // whatever was frozen in there. Pin it to 1 the whole time so there's nothing stale left.
-    for (int idx : chosen)
-        lightWeight[idx] = 1.0f;
+    for (int j = 0; j < numShadowLights; ++j)
+        lightWeight[shadowLightIndex[j]] = 1.0f;
 
     // Torches flicker over time instead of being static: a sum of two sines at different
     // frequencies (less mechanical than one), phase-shifted per light so they don't pulse in
@@ -737,11 +739,14 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
                        + 0.02f * sin(t * 8.0f + seed * 2.3f);
         flicker = glm::clamp(flicker, 0.85f, 1.05f);   // never fully dark, never a huge spike
 
-        // shadow-casters are placed first in shadeLightIndex above, so the i-th shaded light
-        // IS shadow slot i whenever i < numShadowLights - no lookup needed. Forced (shadow-
-        // casting) lights are always fully weighted; everyone else uses its ramped lightWeight,
-        // so a light fades in/out instead of popping when it gains/loses its shading slot.
+        // shadow-casters are placed first in shadeLightIndex above, SPOTS then POINTS. So shading
+        // position i < numSpotShadows is SPOT slot i; the next numPointShadows are POINT slot
+        // (i - numSpotShadows); the rest have no shadow. Forced (shadow-casting) lights are always
+        // fully weighted; everyone else uses its ramped lightWeight, so a light fades in/out
+        // instead of popping when it gains/loses its shading slot.
         bool hasShadow = (i < numShadowLights);
+        bool sIsPoint  = hasShadow && (i >= numSpotShadows);
+        int  sSlot     = !hasShadow ? -1 : (sIsPoint ? (i - numSpotShadows) : i);
         float lw = hasShadow ? 1.0f : lightWeight[shadeLightIndex[i]];
         shadeIntensity[i] = light.intensity * flicker * lw;
 
@@ -750,31 +755,31 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         shader.setFloat("lightIntensities" + idx, shadeIntensity[i]);
         shader.setFloat("lightRadii" + idx, light.radius);
 
-        shader.setInt("lightShadowSlot" + idx, hasShadow ? i : -1);
-        shader.setInt("lightShadowIsPoint" + idx, (hasShadow && shadowIsPoint[i]) ? 1 : 0);
+        shader.setInt("lightShadowSlot" + idx, sSlot);
+        shader.setInt("lightShadowIsPoint" + idx, sIsPoint ? 1 : 0);
         shader.setFloat("lightShadowWeight" + idx, hasShadow ? shadowWeight[shadeLightIndex[i]] : 0.0f);
     }
 
-    for (int slot = 0; slot < MAX_SHADOW_LIGHTS; ++slot) {
+    // Bind every shadow map to its own fixed texture unit (unused slots just aren't sampled).
+    // SPOT 2D maps take units 0..MAX_SPOT_SHADOWS-1, POINT cubemaps the units right after.
+    for (int slot = 0; slot < MAX_SPOT_SHADOWS; ++slot) {
         std::string idx = "[" + std::to_string(slot) + "]";
-        if (slot < numShadowLights && !shadowIsPoint[slot])
+        if (slot < numSpotShadows)
             shader.setMat4("lightSpaceMatrices" + idx, lightSpaceMatrices[slot]);
-
-        // both kinds of shadow map live on their own fixed texture units regardless of
-        // whether this slot is used this frame (unused ones just aren't sampled). SPOT maps
-        // take units 0..MAX_SHADOW_LIGHTS-1, POINT cubemaps the next MAX_SHADOW_LIGHTS after.
         glActiveTexture(GL_TEXTURE0 + slot);
         glBindTexture(GL_TEXTURE_2D, shadowMapTex[slot]);
         shader.setInt("shadowMaps" + idx, slot);
-
-        int cubeUnit = MAX_SHADOW_LIGHTS + slot;
-        glActiveTexture(GL_TEXTURE0 + cubeUnit);
+    }
+    for (int slot = 0; slot < MAX_POINT_SHADOWS; ++slot) {
+        std::string idx = "[" + std::to_string(slot) + "]";
+        int unit = MAX_SPOT_SHADOWS + slot;
+        glActiveTexture(GL_TEXTURE0 + unit);
         glBindTexture(GL_TEXTURE_CUBE_MAP, shadowCubeTex[slot]);
-        shader.setInt("pointShadowMaps" + idx, cubeUnit);
+        shader.setInt("pointShadowMaps" + idx, unit);
     }
 
     // per-object albedo texture goes on the unit right after both shadow-map arrays
-    const int ALBEDO_UNIT = 2 * MAX_SHADOW_LIGHTS;   // = 12
+    const int ALBEDO_UNIT = MAX_SPOT_SHADOWS + MAX_POINT_SHADOWS;   // = 10
     shader.setInt("albedoMap", ALBEDO_UNIT);
 
     // blurred SSAO term, one unit further along
@@ -889,9 +894,11 @@ void Renderer::clean() {
     shader.clean();
     shadowShader.clean();
     pointShadowShader.clean();
-    for (int i = 0; i < MAX_SHADOW_LIGHTS; ++i) {
+    for (int i = 0; i < MAX_SPOT_SHADOWS; ++i) {
         glDeleteFramebuffers(1, &shadowFBO[i]);
         glDeleteTextures(1, &shadowMapTex[i]);
+    }
+    for (int i = 0; i < MAX_POINT_SHADOWS; ++i) {
         glDeleteFramebuffers(1, &shadowCubeFBO[i]);
         glDeleteTextures(1, &shadowCubeTex[i]);
     }
