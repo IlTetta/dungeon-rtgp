@@ -181,3 +181,25 @@ private:
     float replayTimeMs_ = 0.0f;
     int   replayFrame_  = 0;
 };
+
+// If `basePath` (e.g. "benchmarks/benchmark_seed12345_cullON.csv") does not exist yet, return it
+// unchanged. If it DOES, return the first free "..._run2.csv" / "..._run3.csv" / ... so replaying the
+// SAME configuration again does not overwrite the previous CSV. This lets us repeat each config a few
+// times to estimate the measurement NOISE (the path is deterministic; the variance comes from the
+// system) - see analysis_notes. The base file is implicitly "run 1", extra runs start at 2.
+inline std::string nextFreeCsvPath(const std::string& basePath) {
+    std::error_code ec;
+    if (!std::filesystem::exists(basePath, ec)) return basePath;   // first run: keep the plain name
+
+    // insert "_runN" just before the ".csv" extension
+    std::filesystem::path p(basePath);
+    std::filesystem::path dir = p.parent_path();
+    std::string stem = p.stem().string();        // filename without the extension
+    std::string ext  = p.extension().string();   // ".csv"
+    for (int run = 2; run < 1000; ++run) {
+        std::filesystem::path candidate = dir / (stem + "_run" + std::to_string(run) + ext);
+        if (!std::filesystem::exists(candidate, ec))
+            return candidate.string();
+    }
+    return basePath;   // give up after 999 runs (should never happen) and overwrite
+}

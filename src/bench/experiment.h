@@ -19,11 +19,12 @@
 // One configuration to measure. Add more runtime knobs here as they become available (e.g. a
 // shadow-light budget, once that is a runtime value instead of a compile-time constant).
 struct ExperimentConfig {
-    std::string name;    // goes into the CSV file name, and tells the configs apart
-    bool culling;        // frustum culling ON/OFF for this run
-    bool ssao;           // SSAO ON/OFF for this run
-    bool instanced;      // particles drawn instanced (1 call) vs naive (1 call per particle)
-    int  particleCount;  // number of particles for this run
+    std::string name;            // goes into the CSV file name, and tells the configs apart
+    bool culling;                // frustum culling ON/OFF for this run
+    bool ssao;                   // SSAO ON/OFF for this run
+    bool structuralInstanced;    // structural geometry (floor/wall/ceiling) drawn instanced vs per-object
+    bool instanced;              // particles drawn instanced (1 call) vs naive (1 call per particle)
+    int  particleCount;          // number of particles for this run
 };
 
 class ExperimentRunner {
@@ -69,9 +70,12 @@ public:
             running_ = false;
             return;
         }
-        // launch the run for configs[index_]
+        // launch the run for configs[index_]. nextFreeCsvPath keeps a repeated batch from
+        // overwriting the previous one's CSVs (it appends _run2/_run3/... instead), so we can run
+        // the same sweep a few times and estimate the measurement noise.
         std::string csv = "benchmarks/benchmark_seed" + std::to_string(seed_)
                         + "_" + configs[index_].name + ".csv";
+        csv = nextFreeCsvPath(csv);
         bench.beginReplay(csv, seed_, configs[index_].culling, shadowBudget_);
         started_ = true;
     }

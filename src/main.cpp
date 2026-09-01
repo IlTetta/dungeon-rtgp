@@ -36,6 +36,8 @@
 #include "bench/benchmark.h"         // M3 benchmark harness: record/replay camera path + CSV log
 #include "bench/experiment.h"        // M3 experiment automation: replay one path once per config
 #include "world/particles.h"         // M3 instanced spark/ember particles rising from the flames
+#include "hud/hud.h"                 // the ImGui performance HUD, pulled out of this file
+#include "input/input.h"             // FPS keyboard/mouse callbacks + applyMovements, out of this file
 
 // Dear ImGui (performance HUD)
 #include "imgui.h"
@@ -49,85 +51,9 @@ const unsigned int HEIGHT = 720;
 // radius of the player sphere used for wall collisions
 const float PLAYER_RADIUS = 0.4f;
 
-// frustum culling on/off (toggled with the C key), to compare performance ON vs OFF
-bool cullingEnabled = true;
-
-// UI mode (toggled with F1): the mouse cursor is released so we can interact with the ImGui HUD
-// (drag it, collapse it), and the camera stops turning. F1 again goes back to first-person.
-bool uiMode = false;
-
-// Set when we switch from HUD back to first-person, so the render loop can drop the keyboard
-// focus from any HUD widget (e.g. a text field) before movement keys are read. Cleared once
-// handled. (See the F1 handler and the SetWindowFocus call in the loop.)
-bool requestClearFocus = false;
-
-// debug spectator camera (toggled with V): we DRAW the scene from far above the player, while the
-// frustum culling keeps using the PLAYER frustum. This lets us watch, from outside, exactly what
-// the culling draws/skips as we move and turn. It is an M3 tool, off by default.
-bool debugCamEnabled = false;
-
-// globals used by the input callbacks (same simple approach as the lab code)
-Camera camera(glm::vec3(0.0f, 1.6f, 0.0f), true);   // start position is set later, after we build the level
-bool keys[1024] = { false };
-float deltaTime = 0.0f;   // time between the current frame and the previous one
-float lastFrame = 0.0f;
-float lastX = WIDTH / 2.0f;
-float lastY = HEIGHT / 2.0f;
-bool firstMouse = true;
-
-// called by GLFW when a key is pressed or released
-void key_callback(GLFWwindow* window, int key, int scancode, int action, int mode) {
-    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
-        glfwSetWindowShouldClose(window, true);
-    // toggle frustum culling on/off
-    if (key == GLFW_KEY_C && action == GLFW_PRESS)
-        cullingEnabled = !cullingEnabled;
-    // toggle the debug spectator camera (far, top-down view of the culling)
-    if (key == GLFW_KEY_V && action == GLFW_PRESS)
-        debugCamEnabled = !debugCamEnabled;
-    // F1: toggle the mouse cursor free (to use the HUD) / captured (first-person look).
-    // We use F1 rather than TAB on purpose: TAB is ImGui's own "focus next field" key, so
-    // toggling with TAB would also move the keyboard focus into a HUD text box (and then WASD
-    // would be typed into it instead of moving the camera). F1 never touches the HUD widgets.
-    if (key == GLFW_KEY_F1 && action == GLFW_PRESS) {
-        uiMode = !uiMode;
-        glfwSetInputMode(window, GLFW_CURSOR, uiMode ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
-        firstMouse = true;   // avoid a camera jump when going back to first-person
-        // going back to first-person: ask the loop to drop the focus from any HUD widget that
-        // still holds it, so movement keys reach the game and not a text field.
-        if (!uiMode) requestClearFocus = true;
-    }
-    if (key >= 0 && key < 1024) {
-        if (action == GLFW_PRESS)   keys[key] = true;
-        if (action == GLFW_RELEASE) keys[key] = false;
-    }
-}
-
-// called by GLFW when the mouse moves
-void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
-    if (uiMode) return;          // in UI mode the mouse controls the HUD, not the camera
-    if (firstMouse) {            // avoid a big jump on the very first mouse event
-        lastX = (float)xpos;
-        lastY = (float)ypos;
-        firstMouse = false;
-    }
-    float xoffset = (float)xpos - lastX;
-    float yoffset = lastY - (float)ypos;   // reversed: screen y grows downward
-    lastX = (float)xpos;
-    lastY = (float)ypos;
-    camera.processMouse(xoffset, yoffset);
-}
-
-// check which movement keys are held and move the camera accordingly
-void applyMovements() {
-    // hold SHIFT to sprint: normal speed feels right in the rooms, sprint helps in the long corridors
-    camera.MovementSpeed = (keys[GLFW_KEY_LEFT_SHIFT] || keys[GLFW_KEY_RIGHT_SHIFT]) ? 15.0f : 6.0f;
-
-    if (keys[GLFW_KEY_W]) camera.processKeyboard(FORWARD, deltaTime);
-    if (keys[GLFW_KEY_S]) camera.processKeyboard(BACKWARD, deltaTime);
-    if (keys[GLFW_KEY_A]) camera.processKeyboard(LEFT, deltaTime);
-    if (keys[GLFW_KEY_D]) camera.processKeyboard(RIGHT, deltaTime);
-}
+// The FPS input state (keyboard/mouse callbacks + applyMovements) now lives in input/input.h; the
+// state those callbacks drive (camera, culling / debug-cam toggles, ...) is declared as locals in
+// main() and wired to the input with initInput().
 
 int main() {
     // --- window + OpenGL 4.1 core context ---
@@ -145,9 +71,17 @@ int main() {
         return -1;
     }
     glfwMakeContextCurrent(window);
-    glfwSetKeyCallback(window, key_callback);
-    glfwSetCursorPosCallback(window, mouse_callback);
-    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);   // capture and hide the mouse
+
+    // --- FPS input state (owned here, driven by the callbacks in input.h) ---
+    // The camera and the flags the callbacks toggle live in main; initInput() installs the GLFW
+    // keyboard/mouse callbacks and points the input at these. Done before ImGui init, so ImGui
+    // chains onto our callbacks (see initInput's note).
+    Camera camera(glm::vec3(0.0f, 1.6f, 0.0f), true);   // spawn position is set later by buildWorld
+    bool cullingEnabled  = true;     // C: frustum culling on/off, to compare performance ON vs OFF
+    bool debugCamEnabled = false;    // V: top-down spectator view of what the culling draws/skips
+    bool firstMouse      = true;     // reset after a camera teleport, to avoid a mouse-look jump
+    bool requestClearFocus = false;  // set on return to first-person; the loop then clears HUD focus
+    initInput(window, camera, cullingEnabled, debugCamEnabled, firstMouse, requestClearFocus);
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
         std::cout << "Failed to initialize GLAD" << std::endl;
@@ -175,9 +109,8 @@ int main() {
     bool  debugCamFollowYaw = true;   // chase cam (follows where the player looks) vs fixed north-up
 
     // --- benchmark harness (M3): record/replay a fixed camera path + log metrics to CSV ---
+    // (the Save/Load path-file text and the last status line now live inside the Hud object)
     BenchmarkHarness bench;
-    char benchPathFile[128] = "benchmarks/bench_path.txt";   // file used by the Save/Load buttons
-    std::string benchStatus;   // last Save/Load/Replay result, shown in the panel (empty = nothing yet)
 
     // VSync: ON by default, so normal walking around does not spin the GPU at max. Turn it OFF
     // (checkbox in the Benchmark panel) BEFORE measuring: with VSync the frame rate is capped to
@@ -187,11 +120,12 @@ int main() {
     glfwSwapInterval(1);
 
     // --- experiment automation (M3): replay the loaded path once per configuration, unattended ---
+    // (the "also sweep SSAO" checkbox now lives inside the Hud object)
     ExperimentRunner experiments;
-    bool sweepSSAO = false;               // if set, the batch also toggles SSAO (culling x SSAO)
     bool experimentsWereRunning = false;  // edge-detect the end of a batch, to restore the settings
     bool savedCulling = cullingEnabled;   // user settings captured at batch start, restored after
     bool savedSsao = false;               // (set from renderer.tuning when the batch starts)
+    bool savedStructuralInstancing = false;   // (set from renderer.structuralInstancing at batch start)
 
     // --- particles (M3): instanced sparks/embers rising from the flames ---
     ParticleSystem particles;
@@ -209,6 +143,27 @@ int main() {
     ImGui_ImplOpenGL3_Init("#version 410");
 
     FrameMetrics metrics;   // most fields are filled by the renderer; fps/frameTime here in main
+
+    // --- HUD (the ImGui panels, moved into their own class) ---
+    // The Hud owns only its UI-only state; everything it draws/edits is passed as references in
+    // one HudState. We build that struct ONCE here: the referenced objects (scene, renderer, the
+    // flags...) live for the whole program, so the references stay valid for every frame. The
+    // fields must be listed in the same order as the struct declares them.
+    Hud hud;
+    HudState hudState{
+        scene, chainSystem, camera, renderer, bench, experiments, particles,
+        params, lightingParams, dungeonSeed,
+        cullingEnabled, vsyncEnabled, debugCamEnabled, showFrustumWire, debugCamFollowYaw,
+        debugCamHeight, firstMouse,
+        particleCount, savedCulling, savedSsao, savedInstanced, savedParticleCount,
+        savedStructuralInstancing,
+        metrics, window
+    };
+
+    // frame timing: deltaTime (seconds since last frame) drives movement, physics and the CSV log;
+    // lastFrame is the previous timestamp. Plain locals now (used to be globals for the callbacks).
+    float deltaTime = 0.0f;
+    float lastFrame = 0.0f;
 
     // --- render loop ---
     while (!glfwWindowShouldClose(window)) {
@@ -228,6 +183,7 @@ int main() {
             const ExperimentConfig& c = experiments.currentConfig();
             cullingEnabled = c.culling;
             renderer.tuning.ssaoEnabled = c.ssao;
+            renderer.structuralInstancing = c.structuralInstanced;
             particles.instanced = c.instanced;
             particleCount = c.particleCount;
             particles.setCount(particleCount);
@@ -235,10 +191,11 @@ int main() {
         else if (experimentsWereRunning) {   // the batch just ended this frame
             cullingEnabled = savedCulling;
             renderer.tuning.ssaoEnabled = savedSsao;
+            renderer.structuralInstancing = savedStructuralInstancing;
             particles.instanced = savedInstanced;
             particleCount = savedParticleCount;
             particles.setCount(particleCount);
-            benchStatus = "Experiments finished - see benchmarks/benchmark_*.csv";
+            hud.setStatus("Experiments finished - see benchmarks/benchmark_*.csv");
         }
         experimentsWereRunning = experiments.running();
 
@@ -247,7 +204,7 @@ int main() {
         // sets the camera pose (in replay) and stops the replay when the path is over.
         bench.beginFrame(camera, deltaTime);
         if (!bench.drivingCamera()) {
-            applyMovements();
+            applyMovements(deltaTime);
             // push the player out of any wall it tried to walk into
             camera.Position = resolveWallCollisions(camera.Position, PLAYER_RADIUS, scene);
         }
@@ -323,281 +280,8 @@ int main() {
         // Called here, after metrics.fps is filled, so the CSV row is complete.
         bench.endFrame(camera, metrics, deltaTime);
 
-        // --- HUD window ---
-        ImGui::Begin("Performance");
-        ImGui::Text("FPS: %.0f  (%.2f ms)", metrics.fps, metrics.frameTimeMs);
-        ImGui::Separator();
-        ImGui::Text("Objects drawn : %d / %d", metrics.drawCalls, metrics.objectsTotal);
-        ImGui::Text("Objects culled: %d", metrics.objectsCulled);
-        ImGui::Text("Triangles     : %d", metrics.trianglesDrawn);
-        ImGui::Text("Lights        : %d", metrics.activeLights);
-        ImGui::Text("Shadow lights : %d  (%d passes)", metrics.shadowLights, metrics.shadowPasses);
-        ImGui::Text("Fog steps     : %d", metrics.fogSteps);
-        ImGui::Separator();
-        ImGui::Text("Frustum culling: %s", cullingEnabled ? "ON" : "OFF");
-
-        // shading/shadow constants, live - move them around until it looks right, then bake
-        // the values in as the new defaults.
-        ImGui::Separator();
-        if (ImGui::CollapsingHeader("Shadow tuning")) {
-            ImGui::Checkbox("Shadows enabled", &renderer.tuning.shadowsEnabled);
-            ImGui::SliderFloat("Ambient", &renderer.tuning.ambient, 0.0f, 0.5f);
-            ImGui::TextDisabled("SPOT (wall torches)");
-            ImGui::SliderFloat("Spot bias max", &renderer.tuning.spotBiasMax, 0.0f, 0.2f);
-            ImGui::SliderFloat("Spot bias min", &renderer.tuning.spotBiasMin, 0.0f, 0.05f);
-            ImGui::SliderFloat("Spot normal offset", &renderer.tuning.spotNormalOffset, 0.0f, 0.2f);
-            ImGui::TextDisabled("POINT (braziers, cubemap)");
-            ImGui::SliderFloat("Point bias scale", &renderer.tuning.pointBiasScale, 0.0f, 0.2f);
-            ImGui::SliderFloat("Point bias min scale", &renderer.tuning.pointBiasMinScale, 0.0f, 0.1f);
-            ImGui::SliderFloat("Point normal offset", &renderer.tuning.pointNormalOffset, 0.0f, 0.3f);
-            ImGui::SliderFloat("Point softness", &renderer.tuning.pointPCFRadius, 0.0f, 0.15f);
-            ImGui::TextDisabled("Pop-in fix (shadows)");
-            ImGui::SliderFloat("Hysteresis margin", &renderer.tuning.shadowHysteresisMargin, 1.0f, 2.0f);
-            ImGui::SliderFloat("Fade seconds", &renderer.tuning.shadowFadeSeconds, 0.0f, 1.5f);
-            ImGui::TextDisabled("Pop-in fix (lights, >32 nearby)");
-            ImGui::SliderFloat("Light hysteresis margin", &renderer.tuning.lightHysteresisMargin, 1.0f, 2.0f);
-            ImGui::SliderFloat("Light fade seconds", &renderer.tuning.lightFadeSeconds, 0.0f, 1.5f);
-            ImGui::TextDisabled("Contact shadows (SSAO)");
-            ImGui::Checkbox("SSAO enabled", &renderer.tuning.ssaoEnabled);
-            ImGui::SliderFloat("SSAO radius", &renderer.tuning.ssaoRadius, 0.05f, 2.0f);
-            ImGui::SliderFloat("SSAO bias", &renderer.tuning.ssaoBias, 0.0f, 0.1f);
-            ImGui::SliderFloat("SSAO strength", &renderer.tuning.ssaoStrength, 0.5f, 4.0f);
-            if (ImGui::Button("Reset to defaults"))
-                renderer.tuning = Renderer::ShadingTuning();
-        }
-
-        // M3: volumetric fog, ray marched (see shaders/fog.frag). fogSteps also drives the
-        // FrameMetrics::fogSteps counter above, for the "fog steps vs fps" experiment.
-        if (ImGui::CollapsingHeader("Volumetric fog")) {
-            ImGui::Checkbox("Fog enabled", &renderer.tuning.fogEnabled);
-            ImGui::ColorEdit3("Fog color", &renderer.tuning.fogColor.x);
-            ImGui::SliderFloat("Density", &renderer.tuning.fogDensity, 0.0f, 0.2f);
-            ImGui::SliderFloat("Scatter strength", &renderer.tuning.fogScatter, 0.0f, 2.0f);
-            ImGui::SliderFloat("Max distance", &renderer.tuning.fogMaxDistance, 5.0f, 100.0f);
-            ImGui::SliderInt("Steps", &renderer.tuning.fogSteps, 1, 64);
-        }
-
-        // --- M3 tools ---
-        // (1) regenerate the dungeon from a seed, live. ImGui has no unsigned field, so we edit an
-        // int and clamp it to >= 0 before casting back to the unsigned seed.
-        ImGui::Separator();
-        ImGui::Text("Dungeon");
-        int seedField = (int)dungeonSeed;
-        if (ImGui::InputInt("Seed", &seedField)) {
-            if (seedField < 0) seedField = 0;
-            dungeonSeed = (unsigned int)seedField;
-        }
-        if (ImGui::Button("Generate")) {
-            buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
-            renderer.resetLightFades();   // new scene, new lights - old fade state does not apply
-            firstMouse = true;   // the camera teleported: avoid a mouse-look jump next frame
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Random seed")) {
-            dungeonSeed = (unsigned int)(glfwGetTime() * 100000.0);
-            buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
-            renderer.resetLightFades();
-            firstMouse = true;
-        }
-
-        // (2) debug spectator camera controls
-        ImGui::Separator();
-        ImGui::Checkbox("Debug camera (V)", &debugCamEnabled);
-        if (debugCamEnabled) {
-            ImGui::Checkbox("Show frustum wireframe", &showFrustumWire);
-            ImGui::Checkbox("Follow player rotation", &debugCamFollowYaw);
-            ImGui::SliderFloat("Cam height", &debugCamHeight, 10.0f, 90.0f);
-        }
-
-        ImGui::Separator();
-        ImGui::TextDisabled("F1 cursor - C culling - V debug cam - WASD move - Shift sprint - ESC quit");
-        ImGui::End();
-
-        // --- Lighting / torches tuning (separate window) ---
-        // Live sliders (intensity/radius/color) are pushed into the scene lights every frame by
-        // applyTorchLightTuning(); the placement sliders only take effect on "Regenerate".
-        ImGui::Begin("Lighting / Torches");
-        ImGui::TextDisabled("Live (applied immediately):");
-        ImGui::SliderFloat("Intensity", &lightingParams.torchIntensity, 0.0f, 5.0f);
-        ImGui::SliderFloat("Radius (tiles)", &lightingParams.torchRadius, 1.0f, 15.0f);
-        ImGui::ColorEdit3("Color", &lightingParams.torchColor.x);
-        ImGui::Separator();
-        ImGui::TextDisabled("Placement (press Regenerate to apply):");
-        ImGui::SliderFloat("Wall spacing (u)", &lightingParams.torchSpacing, 2.0f, 15.0f);
-        ImGui::SliderInt("Corridor every", &lightingParams.corridorEvery, 1, 8);
-        ImGui::SliderFloat("Mount height (u)", &lightingParams.torchHeight, 1.0f, 4.0f);
-        ImGui::SliderFloat("Cone tilt down", &lightingParams.coneTilt, 0.0f, 1.0f);
-        if (ImGui::Button("Regenerate with these")) {
-            buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
-            renderer.resetLightFades();
-            firstMouse = true;   // camera teleported: avoid a mouse-look jump next frame
-        }
-        ImGui::End();
-
-        // --- Benchmark harness (record/replay a fixed camera path + CSV logging) ---
-        // Record a walkthrough, Save/Load it to a file, then Replay it: the replay drives the
-        // camera along the exact same path while logging the per-frame metrics to a CSV. Replaying
-        // the same path under different settings (culling ON/OFF, ...) is how we get comparable
-        // measurements. NB: for real numbers use a Release build and keep VSync off.
-        ImGui::Begin("Benchmark");
-        ImGui::Text("Mode: %s", bench.modeName());
-        ImGui::Text("Path: %d keyframes  (%.1f s)  seed %u",
-                    bench.path().size(), bench.path().durationMs() / 1000.0f, bench.path().seed);
-        if (bench.mode() == BenchmarkHarness::REPLAYING)
-            ImGui::Text("Replay: %.1f / %.1f s",
-                        bench.replayTimeMs() / 1000.0f, bench.path().durationMs() / 1000.0f);
-
-        // VSync toggle. Checkbox returns true only on the frame the value changes, so we call
-        // glfwSwapInterval only then (0 = uncapped, for benchmarking; 1 = capped to refresh).
-        if (ImGui::Checkbox("VSync", &vsyncEnabled))
-            glfwSwapInterval(vsyncEnabled ? 1 : 0);
-        ImGui::SameLine();
-        ImGui::TextDisabled("(turn OFF to benchmark)");
-        // loud reminder if we are actually replaying+logging with the frame rate still capped
-        if (bench.mode() == BenchmarkHarness::REPLAYING && vsyncEnabled)
-            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "VSync ON: frame rate is capped!");
-
-        if (experiments.running()) {
-            // A batch is running: show progress and hide the manual controls (the harness mode
-            // flickers REPLAYING/idle between runs, so we don't want the manual buttons here).
-            ImGui::Separator();
-            ImGui::Text("Experiment %d/%d: %s", experiments.currentIndex() + 1,
-                        experiments.count(), experiments.currentConfig().name.c_str());
-            if (ImGui::Button("Stop experiments")) experiments.stop(bench);
-        }
-        else {
-            ImGui::InputText("Path file", benchPathFile, sizeof(benchPathFile));
-
-            if (bench.mode() == BenchmarkHarness::IDLE) {
-                // record on the CURRENT seed (stored inside the path)
-                if (ImGui::Button("Record")) bench.beginRecord(dungeonSeed);
-                ImGui::SameLine();
-                // Save / Load report their result in benchStatus, so it is obvious the click did
-                // something. The file is written relative to the working directory (with the VS
-                // "Open Folder" flow that is the build output folder, e.g. out/build/x64-Debug/).
-                if (ImGui::Button("Save")) {
-                    bool ok = bench.savePath(benchPathFile);
-                    benchStatus = ok ? ("Saved " + std::to_string(bench.path().size())
-                                        + " keyframes -> " + std::string(benchPathFile))
-                                     : ("SAVE FAILED -> " + std::string(benchPathFile));
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Load")) {
-                    bool ok = bench.loadPath(benchPathFile);
-                    benchStatus = ok ? ("Loaded " + std::to_string(bench.path().size())
-                                        + " keyframes (seed " + std::to_string(bench.path().seed)
-                                        + ") <- " + std::string(benchPathFile))
-                                     : ("LOAD FAILED (file not found?) <- " + std::string(benchPathFile));
-                }
-
-                if (ImGui::Button("Replay + log CSV")) {
-                    // A path only makes sense on the dungeon it was recorded on: if the (loaded)
-                    // path has a different seed, regenerate that exact dungeon first.
-                    if (bench.path().seed != dungeonSeed) {
-                        dungeonSeed = bench.path().seed;
-                        buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
-                        renderer.resetLightFades();   // new scene, new lights - drop stale fade state
-                        firstMouse = true;
-                    }
-                    // The CSV name encodes the configuration under test, so files from different
-                    // experiments do not overwrite each other ("benchmark_*.csv" is git-ignored).
-                    // It goes under benchmarks/ (the harness creates the folder if missing).
-                    std::string csv = "benchmarks/benchmark_seed" + std::to_string(dungeonSeed)
-                                    + (cullingEnabled ? "_cullON" : "_cullOFF") + ".csv";
-                    bool ok = bench.beginReplay(csv, dungeonSeed, cullingEnabled, Renderer::MAX_SHADOW_LIGHTS);
-                    benchStatus = ok ? ("Replaying, logging -> " + csv)
-                                     : "REPLAY FAILED (empty path, or CSV could not be opened)";
-                }
-
-                // --- automated experiment sweep ---
-                // Replay the SAME path once per configuration and log a CSV each, unattended. The
-                // core experiment is culling ON vs OFF (everything else equal); optionally we also
-                // cross it with SSAO on/off (a 2x2 matrix). The path is the only thing kept fixed.
-                ImGui::Separator();
-                ImGui::Checkbox("Also sweep SSAO on/off (2x2)", &sweepSSAO);
-                if (ImGui::Button("Run experiments")) {
-                    // same dungeon as the path, exactly (regenerate if the seed differs)
-                    if (bench.path().seed != dungeonSeed) {
-                        dungeonSeed = bench.path().seed;
-                        buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
-                        renderer.resetLightFades();   // new scene, new lights - drop stale fade state
-                        firstMouse = true;
-                    }
-                    // remember the user's settings so we can restore them after the batch
-                    savedCulling = cullingEnabled;
-                    savedSsao = renderer.tuning.ssaoEnabled;
-                    savedInstanced = particles.instanced;
-                    savedParticleCount = particleCount;
-                    // build the config list: culling ON/OFF, optionally crossed with SSAO on/off.
-                    // Particles are kept at the user's current values in every run, so the culling
-                    // comparison is fair (only the tested knob changes; everything else equal).
-                    experiments.configs.clear();
-                    if (sweepSSAO) {
-                        experiments.configs.push_back({ "cullON_ssaoON",   true,  true,  savedInstanced, savedParticleCount });
-                        experiments.configs.push_back({ "cullOFF_ssaoON",  false, true,  savedInstanced, savedParticleCount });
-                        experiments.configs.push_back({ "cullON_ssaoOFF",  true,  false, savedInstanced, savedParticleCount });
-                        experiments.configs.push_back({ "cullOFF_ssaoOFF", false, false, savedInstanced, savedParticleCount });
-                    } else {
-                        experiments.configs.push_back({ "cullON",  true,  savedSsao, savedInstanced, savedParticleCount });
-                        experiments.configs.push_back({ "cullOFF", false, savedSsao, savedInstanced, savedParticleCount });
-                    }
-                    experiments.start(bench, dungeonSeed, Renderer::MAX_SHADOW_LIGHTS);
-                    benchStatus = experiments.running()
-                        ? ("Running " + std::to_string(experiments.count()) + " experiments (path = "
-                           + std::to_string(bench.path().size()) + " keyframes)...")
-                        : "Cannot run experiments: record or load a path first";
-                }
-
-                // --- particle instancing sweep: instanced vs naive, everything else equal ---
-                // Measures directly what instancing saves: same path, same culling/SSAO, same
-                // particle count, only the draw strategy changes (1 call vs one call per particle).
-                if (ImGui::Button("Run particle sweep")) {
-                    if (bench.path().seed != dungeonSeed) {
-                        dungeonSeed = bench.path().seed;
-                        buildWorld(dungeonSeed, params, lightingParams, scene, chainSystem, camera);
-                        renderer.resetLightFades();   // new scene, new lights - drop stale fade state
-                        firstMouse = true;
-                    }
-                    savedCulling = cullingEnabled;
-                    savedSsao = renderer.tuning.ssaoEnabled;
-                    savedInstanced = particles.instanced;
-                    savedParticleCount = particleCount;
-                    experiments.configs.clear();
-                    experiments.configs.push_back({ "instancedON",  savedCulling, savedSsao, true,  particleCount });
-                    experiments.configs.push_back({ "instancedOFF", savedCulling, savedSsao, false, particleCount });
-                    experiments.start(bench, dungeonSeed, Renderer::MAX_SHADOW_LIGHTS);
-                    benchStatus = experiments.running()
-                        ? ("Running particle sweep (" + std::to_string(particleCount) + " particles)...")
-                        : "Cannot run: record or load a path first";
-                }
-                if (bench.path().empty())
-                    ImGui::TextDisabled("(record or load a path first)");
-            }
-            else if (bench.mode() == BenchmarkHarness::RECORDING) {
-                if (ImGui::Button("Stop recording")) bench.stopRecord();
-            }
-            else {   // REPLAYING (manual)
-                if (ImGui::Button("Stop replay")) bench.stopReplay();
-            }
-        }
-
-        // last Save/Load/Replay result (with the absolute path), so it is clear what happened
-        if (!benchStatus.empty()) {
-            ImGui::Separator();
-            ImGui::TextWrapped("%s", benchStatus.c_str());
-        }
-        ImGui::End();
-
-        // --- Particles (M3): instanced sparks/embers, with an instanced-vs-naive A/B ---
-        ImGui::Begin("Particles");
-        ImGui::Checkbox("Enabled", &particles.enabled);
-        ImGui::Checkbox("Instanced (1 draw call)", &particles.instanced);
-        if (ImGui::SliderInt("Count", &particleCount, 0, 8000))
-            particles.setCount(particleCount);
-        ImGui::Text("Particle draw calls this frame: %d", metrics.particleDrawCalls);
-        if (!particles.instanced)
-            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Naive: one draw call per particle");
-        ImGui::End();
+        // --- HUD: all four ImGui panels, drawn from their own class ---
+        hud.draw(hudState);
 
         // draw the HUD on top of the scene, then present the frame
         ImGui::Render();
