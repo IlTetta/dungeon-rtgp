@@ -19,10 +19,15 @@ struct FrameMetrics {
     // render() (it iterates the objects anyway), the Renderer is the natural single writer
     // for all the object/draw counters.
     int objectsTotal    = 0;      // how many objects the scene has
+    int objectsDrawn    = 0;      // how many objects were actually drawn this frame (visible ones)
     int objectsCulled   = 0;      // how many were skipped by frustum culling (M2)
     int activeLights    = 0;      // how many lights are actually used
 
-    int drawCalls       = 0;      // how many draw calls this frame (= objects actually drawn)
+    // How many real GL draw calls the color pass issued. On the plain per-object path this equals
+    // objectsDrawn (one call per object); with structural instancing ON the floor/wall/ceiling
+    // slabs collapse into 3 instanced calls, so drawCalls drops well below objectsDrawn - that gap
+    // is exactly what the instancing A/B measures (same triangles, far fewer calls).
+    int drawCalls       = 0;      // filled by Renderer
     int trianglesDrawn  = 0;      // filled by Renderer (how many triangles were sent)
     int fogSteps        = 0;      // filled by Renderer (ray-march steps of the fog, M3)
 

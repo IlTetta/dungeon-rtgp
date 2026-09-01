@@ -30,7 +30,7 @@
 // distances instead, since a single cone can't cover an omnidirectional light.
 //
 // Volumetric fog (M3): after the color pass, a full-screen ray march (shaders/fog.frag)
-// reads back its color+depth and composites an atmospheric haze on top - see renderFog().
+// reads back its color+depth and composites an atmospheric haze on top - see FogPass (render/fog_pass.h).
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -42,12 +42,24 @@
 #include "core/metrics.h"
 #include "world/frustum_culling.h"   // Andrea's culling, used inside the render loop
 #include "render/framebuffer.h"      // off-screen color+depth target the fog pass reads from
+#include "render/structural_instancer.h"   // instanced floor/wall/ceiling draw (the instancing A/B)
+#include "render/ssao_pass.h"        // the SSAO pipeline, extracted into its own class
+#include "render/shadow_maps.h"      // the shadow-map resources + depth passes, own class
+#include "render/fog_pass.h"         // the volumetric fog composite, own class
 
 class Renderer {
 public:
     // frustum culling on/off. main.cpp flips this from the C key so we can compare ON vs OFF.
     // When on, render() skips every object whose AABB is outside the camera frustum.
     bool cullingEnabled = true;
+
+    // Structural instancing on/off (the second measurable optimization). When on, the color pass
+    // draws the floor/wall/ceiling slabs with 3 instanced calls instead of one per slab; the
+    // per-object loop then draws only the props. OFF by DEFAULT on purpose: the plain per-object
+    // path is the honest baseline, and keeping structural instancing off during the culling
+    // experiment stops it from masking culling's draw-call reduction (with it on, the structural
+    // draw count is a constant 3 regardless of culling). Flip it for the instancing A/B.
+    bool structuralInstancing = false;
 
     // Live-tunable shading/shadow constants, sent to ggx.frag as uniforms every frame (see
     // renderInternal()). main.cpp exposes them in an ImGui panel to dial them in without
@@ -127,31 +139,19 @@ public:
     // job for a later milestone, not for basic forward rendering.
     static const int MAX_LIGHTS = 32;
 
-    // How many lights cast a REAL shadow at once, split by TYPE because the two kinds cost very
-    // differently and a room has many more torches than braziers: torches are SPOT lights with a
-    // cheap 2D shadow map (1 depth pass), braziers are POINT lights with a 6-face cubemap. Within
-    // each type, the nearest MAX_SPOT_SHADOWS / MAX_POINT_SHADOWS lights to the camera cast a shadow;
-    // one that drops out fades over shadowFadeSeconds instead of popping. A light that never makes
-    // the cut falls back to unshadowed - never a crash.
+    // Shadow budgets, split by TYPE (a room has many more torches than braziers, and a SPOT map is
+    // 1 pass vs a POINT cubemap's 6 faces). The nearest MAX_SPOT_SHADOWS / MAX_POINT_SHADOWS lights
+    // to the camera cast a shadow each frame; one that drops out fades (shadowFadeSeconds) instead
+    // of popping; a light that never makes the cut falls back to unshadowed - never a crash.
     //
-    // Texture-unit note: the color pass binds MAX_SPOT_SHADOWS 2D maps + MAX_POINT_SHADOWS cubemaps
-    // + albedo + SSAO = 12 units, well under the GL 4.1 minimum of 16 (we print the real limit,
-    // GL_MAX_TEXTURE_IMAGE_UNITS, at startup). To push the budget much higher you'd hit the per-unit
-    // limit and would move the shadow maps into texture ARRAYS - one unit per type instead of one
-    // per slot. These MUST match "#define MAX_SPOT_SHADOWS / MAX_POINT_SHADOWS" in shaders/ggx.frag.
-    static const int MAX_SPOT_SHADOWS  = 8;   // SPOT (torch) 2D maps
-    static const int MAX_POINT_SHADOWS = 2;   // POINT (brazier) cubemaps
+    // The map RESOURCES + resolutions now live in ShadowMaps (render/shadow_maps.h). These are the
+    // public ALIASES of its budgets, kept here because renderInternal (texture-unit layout), the HUD
+    // and the benchmark all read Renderer::MAX_*. The color pass binds MAX_SPOT_SHADOWS 2D maps +
+    // MAX_POINT_SHADOWS cubemaps + albedo + SSAO = 12 units (< the GL 4.1 minimum of 16). MUST match
+    // "#define MAX_SPOT_SHADOWS / MAX_POINT_SHADOWS" in shaders/ggx.frag.
+    static const int MAX_SPOT_SHADOWS  = ShadowMaps::MAX_SPOT;
+    static const int MAX_POINT_SHADOWS = ShadowMaps::MAX_POINT;
     static const int MAX_SHADOW_LIGHTS = MAX_SPOT_SHADOWS + MAX_POINT_SHADOWS;   // total casters
-
-    // Resolution of a SPOT light's 2D shadow map (square). 512 keeps them cheap and a touch softer
-    // at this scale (down from 1024); raise it if PCF edges look too blocky up close.
-    static const int SHADOW_MAP_SIZE = 512;
-
-    // Resolution of ONE FACE of a POINT light's cubemap shadow. Smaller than SHADOW_MAP_SIZE
-    // on purpose: a cubemap is 6 of these per light, so the total texel budget per point-
-    // shadow-caster is already 6x - keeping each face at 512 instead of 1024 keeps that
-    // budget roughly comparable to a SPOT light's.
-    static const int POINT_SHADOW_SIZE = 512;
 
     // Loads and compiles the given vertex/fragment shader pair (paths relative to the
     // working directory; see the shaders copy step in CMakeLists.txt). main.cpp passes
@@ -206,11 +206,15 @@ private:
     Shader shader;
     glm::mat4 projection;
 
+    // Draws the structural slabs instanced when structuralInstancing is on (owns its own cube +
+    // instance VBO, built once in the constructor). See render/structural_instancer.h.
+    StructuralInstancer instancer;
+
     // kept so setViewport() can rebuild the projection if we ever change the field of view
     float fovDegrees;
 
     // current viewport size, so renderInternal() can restore it after the shadow passes
-    // (which switch the viewport to SHADOW_MAP_SIZE x SHADOW_MAP_SIZE).
+    // (which switch the viewport to a shadow-map resolution).
     int viewportWidth;
     int viewportHeight;
 
@@ -234,104 +238,28 @@ private:
     // marks "no previous frame yet".
     float lastFrameTime = -1.0f;
 
-    // --- shadow mapping state ---
-    // SPOT (cone) shadows: depth-only shader (shaders/shadowmap.vert/.frag), one FBO + one
-    // 2D depth texture per potential shadow-casting slot.
-    Shader shadowShader;
-    GLuint shadowFBO[MAX_SPOT_SHADOWS];
-    GLuint shadowMapTex[MAX_SPOT_SHADOWS];
+    // --- shadow mapping ---
+    // The shadow-map resources (SPOT 2D maps + POINT distance cubemaps) and the two depth passes
+    // live in their own class now (render/shadow_maps.h). renderInternal still does the nearest-N
+    // caster SELECTION (it owns the fade state), then per slot calls shadows.computeSpotMatrix(),
+    // shadows.renderSpotPass() / shadows.renderPointPass(), and binds shadows.spotTexture(slot) /
+    // shadows.pointTexture(slot) in the color pass. Behaviour-identical to the old inline passes.
+    ShadowMaps shadows;
 
-    // POINT (cubemap) shadows: a vertex+geometry+fragment shader
-    // (shaders/pointshadow.vert/.geom/.frag) that renders all 6 faces of a light's cubemap in
-    // one draw call per object - the geometry shader re-emits each triangle 6 times, once per
-    // face, via gl_Layer (see pointshadow.geom). One FBO + one cubemap (GL_R32F: world
-    // distance from the light) per potential shadow-casting slot, with the whole cubemap
-    // attached as a single layered color target (glFramebufferTexture, not
-    // glFramebufferTexture2D - the latter only attaches one face). Depth needs to be layered
-    // too, since all 6 faces are rasterized in the same draw call and each must depth-test
-    // only against its own face - one shared depth cubemap (a renderbuffer can't do layered
-    // attachment, needs to be an actual texture), reused across slots since they still render
-    // one at a time.
-    Shader pointShadowShader;
-    GLuint shadowCubeFBO[MAX_POINT_SHADOWS];
-    GLuint shadowCubeTex[MAX_POINT_SHADOWS];
-    GLuint pointShadowDepthCubeTex;
+    // --- SSAO ---
+    // The whole screen-space ambient-occlusion pipeline (G-buffer -> raw AO -> blur) lives in its
+    // own class now (render/ssao_pass.h) and owns all its GPU resources. renderInternal() calls
+    // ssao.render(...) before the color pass, then binds ssao.blurredAOTexture() into it; setViewport
+    // forwards the resize. Behaviour-identical to the old inline renderSSAO().
+    SsaoPass ssao;
 
-    // Create the shadow FBOs + textures (both kinds) once, at startup.
-    void initShadowMaps();
-
-    // Build the light-space matrix (projection * view, from the light's point of view) for
-    // one SPOT shadow-casting torch. Perspective, not orthographic (see
-    // shaders/shadowmap.vert): its shadow map only needs to cover the ~100 degree cone it is
-    // aimed into (Light::direction).
-    glm::mat4 computeLightSpaceMatrix(const Light& light) const;
-
-    // Render the whole scene, depth-only, into shadowFBO[slot] using shadowShader and the
-    // given light-space matrix. Called once per SPOT shadow-casting torch, before the color
-    // pass.
-    void renderShadowPass(const Scene& scene, int slot, const glm::mat4& lightSpaceMatrix);
-
-    // Build the 6 face matrices (90-degree-FOV perspective, aimed down +-X/+-Y/+-Z from the
-    // light's position) for one POINT shadow-casting brazier's cubemap.
-    void computePointShadowMatrices(const Light& light, glm::mat4 outFaces[6]) const;
-
-    // Render the whole scene, depth-only, into shadowCubeTex[slot]'s 6 faces in ONE pass
-    // (pointShadowShader's geometry shader fans each triangle out to all 6) using
-    // pointShadowShader. Called once per POINT shadow-casting brazier, before the color pass.
-    void renderPointShadowPass(const Scene& scene, int slot, const Light& light);
-
-    // --- SSAO state ---
-    // Resolution the G-buffer/SSAO textures are allocated at; kept in sync with the real
-    // viewport by setViewport() (see resizeSSAO()).
-    int ssaoWidth = 0;
-    int ssaoHeight = 0;
-
-    Shader gBufferShader;   // shaders/gbuffer.vert/.frag - writes view-space pos/normal
-    Shader ssaoShader;      // shaders/fullscreen.vert + ssao.frag - the raw, noisy AO term
-    Shader ssaoBlurShader;  // shaders/fullscreen.vert + ssaoblur.frag - smooths it out
-
-    GLuint gBufferFBO = 0, gPositionTex = 0, gNormalTex = 0, gDepthRBO = 0;
-    GLuint ssaoFBO = 0, ssaoColorTex = 0;
-    GLuint ssaoBlurFBO = 0, ssaoBlurColorTex = 0;
-    GLuint ssaoNoiseTex = 0;   // small tiled texture of random per-pixel rotation vectors
-    glm::vec3 ssaoKernel[32];  // hemisphere sample offsets, in the surface's own tangent space
-
-    GLuint quadVAO = 0, quadVBO = 0;   // the 2-triangle full-screen quad the two passes above draw
-
-    // Creates every SSAO GPU resource above (called once from the constructor) and computes
-    // the hemisphere kernel (fixed, does not need recomputing per frame).
-    void initSSAO();
-
-    // Re-creates the G-buffer/SSAO textures at a new size (the AO texture must be pixel-for-
-    // pixel screen-sized, unlike the shadow maps which have their own fixed resolution).
-    // Called from setViewport() whenever the size actually changed.
-    void resizeSSAO(int width, int height);
-
-    // The 3-pass SSAO pipeline itself: G-buffer -> raw AO -> blur. Called once per frame,
-    // after the shadow passes and before the color pass (the color pass samples its result).
-    // `view`/`cullFrustum` match whichever camera renderInternal is drawing from.
-    void renderSSAO(const Scene& scene, const glm::mat4& view, const Frustum& cullFrustum);
-
-    // --- fog state ---
-    // The main color pass draws into this (color + depth) instead of straight to the screen,
-    // so the fog pass can read both back afterward. Uses the existing Framebuffer class
-    // (render/framebuffer.h), unused until now.
+    // --- fog ---
+    // The main color pass draws into this off-screen FBO (color + depth) instead of straight to the
+    // screen, so the fog pass can read both back afterward. sceneFBO stays here (the color pass owns
+    // it); the ray-march composite itself lives in FogPass (render/fog_pass.h), which owns its shader
+    // and quad. renderInternal calls fog.render(sceneFBO, ...) after the color pass.
     Framebuffer sceneFBO;
-    Shader fogShader;   // shaders/fullscreen.vert + fog.frag
-
-    // Ray march the fog from `eye` using sceneFBO's color+depth, and composite the result
-    // straight onto the screen (framebuffer 0). Called once per frame, after the main color
-    // pass and before the HUD. `invViewProj` is projection*view inverted, to turn this
-    // pixel's depth back into a world position.
-    //
-    // `shadeLightIndex`/`shadeLightIntensity` are exactly what the color pass just used (same
-    // indices into scene.lights, same already-flickered-and-faded intensity per entry) - fog
-    // picks its own MAX_FOG_LIGHTS-nearest subset of THIS list instead of re-sorting
-    // scene.lights independently, so a torch entering/leaving the fog's list only happens
-    // through the same already-fading weights, never as an unfaded pop of its own.
-    void renderFog(const Scene& scene, const glm::vec3& eye, const glm::mat4& invViewProj,
-                   const std::vector<int>& shadeLightIndex, const std::vector<float>& shadeLightIntensity,
-                   FrameMetrics& metrics);
+    FogPass fog;
 
     // NB: the renderer no longer owns any texture. Each object carries a materialIndex into
     // Scene::materials, and we just bind that material's albedo texture. Loading the textures

@@ -10,414 +10,22 @@
 #include <string>         // std::to_string, used to build "lightPositions[i]" uniform names
 #include <vector>
 
-// Which materials cast shadows. Flat structural slabs (floors, ceilings) never cast a useful
-// shadow and only self-shadow into grazing-angle acne; wall torches (MAT_DECOR) sit right at
-// their own light, so their bracket would shadow the light that spawns them. None of these cast.
-static bool isShadowCaster(MaterialId m) {
-    return m != MAT_FLOOR && m != MAT_CEILING && m != MAT_DECOR;
-}
-
 Renderer::Renderer(const char* vertexPath, const char* fragmentPath)
     : shader(vertexPath, fragmentPath),
       fovDegrees(60.0f),
       viewportWidth(1280), viewportHeight(720),
-      shadowShader("shaders/shadowmap.vert", "shaders/shadowmap.frag"),
-      pointShadowShader("shaders/pointshadow.vert", "shaders/pointshadow.geom", "shaders/pointshadow.frag"),
-      gBufferShader("shaders/gbuffer.vert", "shaders/gbuffer.frag"),
-      ssaoShader("shaders/fullscreen.vert", "shaders/ssao.frag"),
-      ssaoBlurShader("shaders/fullscreen.vert", "shaders/ssaoblur.frag"),
-      sceneFBO(1280, 720, /*wantColor*/true, /*wantDepth*/true),
-      fogShader("shaders/fullscreen.vert", "shaders/fog.frag")
+      sceneFBO(1280, 720, /*wantColor*/true, /*wantDepth*/true)
 {
     glEnable(GL_DEPTH_TEST);
     projection = glm::mat4(1.0f);
 
-    initShadowMaps();
-    initSSAO();
+    shadows.init();                             // shadow maps own their resources (render/shadow_maps.h)
+    ssao.init(viewportWidth, viewportHeight);   // SSAO owns its own pipeline now (render/ssao_pass.h)
+    fog.init();                                 // fog owns its shader + full-screen quad (fog_pass.h)
 
-    // How many texture units the fragment shader can sample - this caps how big the shadow budget
-    // can grow (MAX_SPOT_SHADOWS + MAX_POINT_SHADOWS + albedo + SSAO must all fit). GL 4.1 only
-    // guarantees >= 16, but real GPUs usually report 32. Printed once so we know the real ceiling.
-    GLint maxTexUnits = 0;
-    glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &maxTexUnits);
-    std::cout << "GL_MAX_TEXTURE_IMAGE_UNITS = " << maxTexUnits
-              << "  (shadow color pass uses " << (MAX_SPOT_SHADOWS + MAX_POINT_SHADOWS + 2)
-              << ": " << MAX_SPOT_SHADOWS << " spot + " << MAX_POINT_SHADOWS << " point + albedo + ssao)"
-              << std::endl;
-}
-
-void Renderer::initShadowMaps() {
-    // SPOT (cone) shadows: one FBO + one 2D depth texture per potential shadow-casting slot,
-    // created once at startup and reused every frame.
-    for (int i = 0; i < MAX_SPOT_SHADOWS; ++i) {
-        glGenFramebuffers(1, &shadowFBO[i]);
-
-        glGenTextures(1, &shadowMapTex[i]);
-        glBindTexture(GL_TEXTURE_2D, shadowMapTex[i]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT,
-                     SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 0,
-                     GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-        // white border: anything outside the light's frustum reads depth = 1.0 (farthest
-        // possible), so it never looks "in shadow" just for falling outside the torch's cone.
-        float borderColor[] = { 1.0f, 1.0f, 1.0f, 1.0f };
-        glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO[i]);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, shadowMapTex[i], 0);
-        glDrawBuffer(GL_NONE);   // depth only, no color attachment
-        glReadBuffer(GL_NONE);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    }
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    // POINT (cubemap) shadows, single-pass: one shared depth cubemap (needs to be a texture,
-    // not a renderbuffer, to support layered attachment), and one FBO + one 6-face color
-    // cubemap per slot, storing world-space distance as a single float per texel rather than
-    // raw depth.
-    glGenTextures(1, &pointShadowDepthCubeTex);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, pointShadowDepthCubeTex);
-    for (int face = 0; face < 6; ++face) {
-        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_DEPTH_COMPONENT,
-                     POINT_SHADOW_SIZE, POINT_SHADOW_SIZE, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
-    }
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-
-    for (int i = 0; i < MAX_POINT_SHADOWS; ++i) {
-        glGenTextures(1, &shadowCubeTex[i]);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, shadowCubeTex[i]);
-        for (int face = 0; face < 6; ++face) {
-            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_R32F,
-                         POINT_SHADOW_SIZE, POINT_SHADOW_SIZE, 0, GL_RED, GL_FLOAT, nullptr);
-        }
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        // cubemaps clamp to edge, not border: there is no "outside" a cube.
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-
-        glGenFramebuffers(1, &shadowCubeFBO[i]);
-        glBindFramebuffer(GL_FRAMEBUFFER, shadowCubeFBO[i]);
-        // glFramebufferTexture (not ...Texture2D) attaches all 6 faces at once as a layered
-        // target - the geometry shader picks the face per emitted triangle via gl_Layer.
-        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, shadowCubeTex[i], 0);
-        glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, pointShadowDepthCubeTex, 0);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    }
-    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
-}
-
-glm::mat4 Renderer::computeLightSpaceMatrix(const Light& light) const {
-    // Perspective, not orthographic: a torch's shadow only needs to cover the cone it is
-    // aimed into. 120 degrees is a wide indoor cone for a wall-mounted torch - wide enough that a
-    // prop edging up to the SIDE of a torch keeps its shadow (a narrower cone dropped it while the
-    // omnidirectional lighting still lit it). near/far follow the light's own attenuation radius, so
-    // shadow-map precision and light attenuation stay consistent with each other.
-    float nearPlane = 0.05f;
-    float farPlane = (light.radius > nearPlane) ? light.radius : (nearPlane + 1.0f);
-
-    glm::mat4 lightProjection = glm::perspective(glm::radians(120.0f), 1.0f, nearPlane, farPlane);
-
-    // "up" for lookAt() cannot be parallel to the look direction. Torches are aimed roughly
-    // horizontally, so world-up is safe; a torch aimed straight up/down would need a fallback.
-    glm::vec3 dir = glm::normalize(light.direction);
-    glm::mat4 lightView = glm::lookAt(light.position, light.position + dir, glm::vec3(0.0f, 1.0f, 0.0f));
-
-    return lightProjection * lightView;
-}
-
-void Renderer::renderShadowPass(const Scene& scene, int slot, const glm::mat4& lightSpaceMatrix) {
-    glViewport(0, 0, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
-    glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO[slot]);
-    glClear(GL_DEPTH_BUFFER_BIT);
-
-    // Standard shadow mapping: render FRONT faces (cull back), so the recorded depth is the
-    // near side of each caster - keeps contact shadows tight under floor-standing props (front-
-    // face culling stored the far side, which leaked light under them / looked inverted on the
-    // grazing floor). Self-shadow acne is handled by the slope-scaled bias + normal offset in
-    // ggx.frag, and the worst offenders (flat floors/ceilings) are excluded from casting anyway.
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
-
-    shadowShader.use();
-    shadowShader.setMat4("lightSpaceMatrix", lightSpaceMatrix);
-
-    // Still cull against this light's own frustum (not the player's): an object outside the
-    // torch's cone cannot occlude anything inside it either, so skipping it is free
-    // correctness. This is also the main perf win once several shadow-casters are active.
-    Frustum lightFrustum = extractFrustum(lightSpaceMatrix);
-    for (const RenderObject& obj : scene.objects) {
-        if (!isShadowCaster(obj.material))   // floors/ceilings (self-shadow acne) and torches
-            continue;                        // (would self-shadow their own light) don't cast
-        if (!isAABBVisible(lightFrustum, obj.worldBounds))
-            continue;
-        shadowShader.setMat4("model", obj.modelMatrix);
-        const Mesh& mesh = scene.meshes[obj.meshIndex];
-        mesh.draw();
-    }
-    // not counted in FrameMetrics::drawCalls (that field describes the color pass) - the cost
-    // shows up in frameTimeMs instead.
-
-    glDisable(GL_CULL_FACE);   // the color pass does not cull
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
-void Renderer::computePointShadowMatrices(const Light& light, glm::mat4 outFaces[6]) const {
-    // 90-degree FOV perspective (exactly covers one cube face) aimed down each of
-    // +-X/+-Y/+-Z from the light's position, in GL_TEXTURE_CUBE_MAP_POSITIVE_X.. face order.
-    float nearPlane = 0.05f;
-    float farPlane = (light.radius > nearPlane) ? light.radius : (nearPlane + 1.0f);
-    glm::mat4 proj = glm::perspective(glm::radians(90.0f), 1.0f, nearPlane, farPlane);
-
-    const glm::vec3& p = light.position;
-    outFaces[0] = proj * glm::lookAt(p, p + glm::vec3( 1, 0, 0), glm::vec3(0, -1, 0));
-    outFaces[1] = proj * glm::lookAt(p, p + glm::vec3(-1, 0, 0), glm::vec3(0, -1, 0));
-    outFaces[2] = proj * glm::lookAt(p, p + glm::vec3(0,  1, 0), glm::vec3(0, 0,  1));
-    outFaces[3] = proj * glm::lookAt(p, p + glm::vec3(0, -1, 0), glm::vec3(0, 0, -1));
-    outFaces[4] = proj * glm::lookAt(p, p + glm::vec3(0, 0,  1), glm::vec3(0, -1, 0));
-    outFaces[5] = proj * glm::lookAt(p, p + glm::vec3(0, 0, -1), glm::vec3(0, -1, 0));
-}
-
-// One draw call's geometry-shader output now covers all 6 faces at once, so per-face culling
-// (like the SPOT pass does) isn't possible here - the CPU has to decide per object before the
-// single draw call starts. Cheapest correct stand-in: skip an object if its AABB doesn't
-// overlap a sphere of the light's own falloff radius (past that distance it contributes ~0
-// light anyway).
-static bool aabbIntersectsSphere(const AABB& box, const glm::vec3& center, float radius) {
-    glm::vec3 closest = glm::clamp(center, box.min, box.max);
-    glm::vec3 d = closest - center;
-    return glm::dot(d, d) <= radius * radius;
-}
-
-void Renderer::renderPointShadowPass(const Scene& scene, int slot, const Light& light) {
-    glm::mat4 faces[6];
-    computePointShadowMatrices(light, faces);
-
-    glViewport(0, 0, POINT_SHADOW_SIZE, POINT_SHADOW_SIZE);
-    glBindFramebuffer(GL_FRAMEBUFFER, shadowCubeFBO[slot]);
-    // This cubemap stores world-space DISTANCE (GL_R32F). Without an explicit glClearColor, an
-    // unrendered texel (any direction that hits nothing before the far plane - e.g. toward
-    // open floor/ceiling, which never cast, see isShadowCaster) inherits whatever the last
-    // glClearColor call set elsewhere, which reads back as "occluder right here" and shadows
-    // that whole direction for no reason. Clear to well past the far plane instead, so "nothing
-    // here" correctly means "no occluder".
-    float farClear = light.radius * 2.0f;
-    glClearColor(farClear, farClear, farClear, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);   // clears all 6 layers at once
-
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);   // front faces (see renderShadowPass): keeps contact shadows tight
-
-    pointShadowShader.use();
-    pointShadowShader.setVec3("lightPos", light.position);
-    for (int face = 0; face < 6; ++face)
-        pointShadowShader.setMat4("lightSpaceMatrices[" + std::to_string(face) + "]", faces[face]);
-
-    // one draw call per object (not 6) - the geometry shader fans each triangle out to every
-    // face that needs it
-    for (const RenderObject& obj : scene.objects) {
-        if (!isShadowCaster(obj.material))   // floors/ceilings/torches don't cast (see above)
-            continue;
-        if (!aabbIntersectsSphere(obj.worldBounds, light.position, light.radius))
-            continue;
-        pointShadowShader.setMat4("model", obj.modelMatrix);
-        const Mesh& mesh = scene.meshes[obj.meshIndex];
-        mesh.draw();
-    }
-    // reported as 6 "face-equivalents" in FrameMetrics::shadowPasses for a consistent GPU
-    // cost comparison, even though it's now 1 real draw call.
-
-    glDisable(GL_CULL_FACE);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
-void Renderer::initSSAO() {
-    // Full-screen quad both SSAO passes draw: 2 triangles in NDC, position + UV interleaved.
-    // Not a Mesh - that class carries attributes meant for real 3D geometry, this is a fixed
-    // shape that never changes.
-    float quadVertices[] = {
-        // pos         // uv
-        -1.0f,  1.0f,  0.0f, 1.0f,
-        -1.0f, -1.0f,  0.0f, 0.0f,
-         1.0f, -1.0f,  1.0f, 0.0f,
-        -1.0f,  1.0f,  0.0f, 1.0f,
-         1.0f, -1.0f,  1.0f, 0.0f,
-         1.0f,  1.0f,  1.0f, 1.0f,
-    };
-    glGenVertexArrays(1, &quadVAO);
-    glGenBuffers(1, &quadVBO);
-    glBindVertexArray(quadVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
-    glBindVertexArray(0);
-
-    // Hemisphere sample kernel: 32 vectors in tangent space, z >= 0, scattered more densely
-    // near the origin so nearby occluders matter more than distant ones. Fixed once here -
-    // only their orientation (via the noise texture, per pixel) changes at runtime.
-    std::uniform_real_distribution<float> randZeroOne(0.0f, 1.0f);
-    std::default_random_engine gen;
-    for (int i = 0; i < 32; ++i) {
-        glm::vec3 sample(
-            randZeroOne(gen) * 2.0f - 1.0f,
-            randZeroOne(gen) * 2.0f - 1.0f,
-            randZeroOne(gen));
-        sample = glm::normalize(sample) * randZeroOne(gen);
-        float scale = (float)i / 32.0f;
-        scale = 0.1f + 0.9f * (scale * scale);
-        ssaoKernel[i] = sample * scale;
-    }
-
-    // 4x4 tile of random rotation vectors (z = 0: a rotation around the normal, not a full 3D
-    // direction), tiled across the screen so every pixel's kernel is rotated a bit
-    // differently - turns banding into noise, which the blur pass then removes.
-    glm::vec3 ssaoNoise[16];
-    for (int i = 0; i < 16; ++i)
-        ssaoNoise[i] = glm::vec3(randZeroOne(gen) * 2.0f - 1.0f, randZeroOne(gen) * 2.0f - 1.0f, 0.0f);
-
-    glGenTextures(1, &ssaoNoiseTex);
-    glBindTexture(GL_TEXTURE_2D, ssaoNoiseTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, 4, 4, 0, GL_RGB, GL_FLOAT, ssaoNoise);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    resizeSSAO(viewportWidth, viewportHeight);
-}
-
-void Renderer::resizeSSAO(int width, int height) {
-    if (width == ssaoWidth && height == ssaoHeight) return;
-
-    if (gBufferFBO) {   // free whatever we already had, if this runs again (e.g. window resize)
-        glDeleteFramebuffers(1, &gBufferFBO);
-        glDeleteTextures(1, &gPositionTex);
-        glDeleteTextures(1, &gNormalTex);
-        glDeleteRenderbuffers(1, &gDepthRBO);
-        glDeleteFramebuffers(1, &ssaoFBO);
-        glDeleteTextures(1, &ssaoColorTex);
-        glDeleteFramebuffers(1, &ssaoBlurFBO);
-        glDeleteTextures(1, &ssaoBlurColorTex);
-    }
-    ssaoWidth = width;
-    ssaoHeight = height;
-
-    // G-buffer: view-space position + normal, floating point (not colors - components are
-    // routinely outside [0,1] or negative).
-    glGenFramebuffers(1, &gBufferFBO);
-    glBindFramebuffer(GL_FRAMEBUFFER, gBufferFBO);
-
-    glGenTextures(1, &gPositionTex);
-    glBindTexture(GL_TEXTURE_2D, gPositionTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, height, 0, GL_RGB, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gPositionTex, 0);
-
-    glGenTextures(1, &gNormalTex);
-    glBindTexture(GL_TEXTURE_2D, gNormalTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, height, 0, GL_RGB, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gNormalTex, 0);
-
-    GLenum gBufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
-    glDrawBuffers(2, gBufs);
-
-    glGenRenderbuffers(1, &gDepthRBO);
-    glBindRenderbuffer(GL_RENDERBUFFER, gDepthRBO);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, gDepthRBO);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    // raw (noisy) AO term: single channel is enough, it's just a 0..1 factor
-    glGenFramebuffers(1, &ssaoFBO);
-    glBindFramebuffer(GL_FRAMEBUFFER, ssaoFBO);
-    glGenTextures(1, &ssaoColorTex);
-    glBindTexture(GL_TEXTURE_2D, ssaoColorTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, width, height, 0, GL_RED, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ssaoColorTex, 0);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    // blurred AO term: what ggx.frag actually samples
-    glGenFramebuffers(1, &ssaoBlurFBO);
-    glBindFramebuffer(GL_FRAMEBUFFER, ssaoBlurFBO);
-    glGenTextures(1, &ssaoBlurColorTex);
-    glBindTexture(GL_TEXTURE_2D, ssaoBlurColorTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, width, height, 0, GL_RED, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ssaoBlurColorTex, 0);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
-void Renderer::renderSSAO(const Scene& scene, const glm::mat4& view, const Frustum& cullFrustum) {
-    // pass 1: G-buffer (view-space position + normal of the closest surface)
-    glBindFramebuffer(GL_FRAMEBUFFER, gBufferFBO);
-    glViewport(0, 0, ssaoWidth, ssaoHeight);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    gBufferShader.use();
-    gBufferShader.setMat4("view", view);
-    gBufferShader.setMat4("projection", projection);
-    for (const RenderObject& obj : scene.objects) {
-        if (cullingEnabled && !isAABBVisible(cullFrustum, obj.worldBounds))
-            continue;
-        gBufferShader.setMat4("model", obj.modelMatrix);
-        scene.meshes[obj.meshIndex].draw();
-    }
-
-    // pass 2: raw AO, from the G-buffer, onto the full-screen quad
-    glBindFramebuffer(GL_FRAMEBUFFER, ssaoFBO);
-    glClear(GL_COLOR_BUFFER_BIT);
-    ssaoShader.use();
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, gPositionTex);
-    ssaoShader.setInt("gPosition", 0);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, gNormalTex);
-    ssaoShader.setInt("gNormal", 1);
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, ssaoNoiseTex);
-    ssaoShader.setInt("texNoise", 2);
-    for (int i = 0; i < 32; ++i)
-        ssaoShader.setVec3("samples[" + std::to_string(i) + "]", ssaoKernel[i]);
-    ssaoShader.setMat4("projection", projection);
-    ssaoShader.setVec2("noiseScale", glm::vec2((float)ssaoWidth / 4.0f, (float)ssaoHeight / 4.0f));
-    ssaoShader.setFloat("radius", tuning.ssaoRadius);
-    ssaoShader.setFloat("bias", tuning.ssaoBias);
-    ssaoShader.setFloat("strength", tuning.ssaoStrength);
-    glBindVertexArray(quadVAO);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-
-    // pass 3: blur, to remove the per-pixel noise the random rotation above introduces
-    glBindFramebuffer(GL_FRAMEBUFFER, ssaoBlurFBO);
-    glClear(GL_COLOR_BUFFER_BIT);
-    ssaoBlurShader.use();
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, ssaoColorTex);
-    ssaoBlurShader.setInt("ssaoInput", 0);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    glBindVertexArray(0);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, viewportWidth, viewportHeight);
+    // build the structural-instancing cube + instance buffer once (needs the GL context, which is
+    // live by now). Whether it is actually used each frame depends on structuralInstancing.
+    instancer.init();
 }
 
 void Renderer::setViewport(int width, int height) {
@@ -435,7 +43,7 @@ void Renderer::setViewport(int width, int height) {
 
     // the G-buffer/SSAO/scene textures must be exactly screen-sized (unlike the shadow maps).
     if (width > 0 && height > 0) {
-        resizeSSAO(width, height);
+        ssao.resize(width, height);
         sceneFBO.resize(width, height);
     }
 }
@@ -465,6 +73,7 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     const Frustum& cullFrustum, bool hideCeiling, FrameMetrics& metrics) {
     metrics.drawCalls = 0;
     metrics.trianglesDrawn = 0;
+    metrics.objectsDrawn = 0;
     metrics.objectsTotal = (int)scene.objects.size();
 
     // Pick which lights cast a shadow this frame, split by TYPE (torches = SPOT, braziers =
@@ -521,7 +130,7 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
 
     for (int idx : chosenSpot) {
         spotShadowLightIndex[numSpotShadows] = idx;
-        lightSpaceMatrices[numSpotShadows] = computeLightSpaceMatrix(scene.lights[idx]);
+        lightSpaceMatrices[numSpotShadows] = shadows.computeSpotMatrix(scene.lights[idx]);
         numSpotShadows++;
     }
     for (int idx : chosenPoint)
@@ -550,11 +159,11 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     metrics.shadowLights = numShadowLights;
     metrics.shadowPasses = 0;
     for (int slot = 0; slot < numSpotShadows; ++slot) {
-        renderShadowPass(scene, slot, lightSpaceMatrices[slot]);
+        shadows.renderSpotPass(scene, slot, lightSpaceMatrices[slot]);
         metrics.shadowPasses += 1;
     }
     for (int slot = 0; slot < numPointShadows; ++slot) {
-        renderPointShadowPass(scene, slot, scene.lights[pointShadowLightIndex[slot]]);
+        shadows.renderPointPass(scene, slot, scene.lights[pointShadowLightIndex[slot]]);
         metrics.shadowPasses += 6;
     }
 
@@ -565,7 +174,8 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     // from, before it (the color pass samples its result). Always runs, even with
     // tuning.ssaoEnabled off, so the blurred texture is never stale - ssaoEnabled just gates
     // whether ggx.frag actually multiplies by it.
-    renderSSAO(scene, view, cullFrustum);
+    ssao.render(scene, projection, view, cullFrustum, cullingEnabled,
+                { tuning.ssaoRadius, tuning.ssaoBias, tuning.ssaoStrength });
 
     // --- 1. clear the scene FBO (not the screen directly - the fog pass composites this
     // onto the screen afterward, it needs the color AND depth back) ---
@@ -708,7 +318,7 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
 
     // Also kept per-light (not just sent to the shader): the fog pass reuses these exact
     // already-flickered, already-faded values below, instead of recomputing its own from a
-    // second, independent light selection (see the "gotcha" note on renderFog's declaration).
+    // second, independent light selection (see the note on FogPass::render in render/fog_pass.h).
     float shadeIntensity[MAX_LIGHTS];
 
     shader.setInt("numLights", lightCount);
@@ -754,14 +364,14 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         if (slot < numSpotShadows)
             shader.setMat4("lightSpaceMatrices" + idx, lightSpaceMatrices[slot]);
         glActiveTexture(GL_TEXTURE0 + slot);
-        glBindTexture(GL_TEXTURE_2D, shadowMapTex[slot]);
+        glBindTexture(GL_TEXTURE_2D, shadows.spotTexture(slot));
         shader.setInt("shadowMaps" + idx, slot);
     }
     for (int slot = 0; slot < MAX_POINT_SHADOWS; ++slot) {
         std::string idx = "[" + std::to_string(slot) + "]";
         int unit = MAX_SPOT_SHADOWS + slot;
         glActiveTexture(GL_TEXTURE0 + unit);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, shadowCubeTex[slot]);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, shadows.pointTexture(slot));
         shader.setInt("pointShadowMaps" + idx, unit);
     }
 
@@ -772,17 +382,29 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     // blurred SSAO term, one unit further along
     const int SSAO_UNIT = ALBEDO_UNIT + 1;   // = 13
     glActiveTexture(GL_TEXTURE0 + SSAO_UNIT);
-    glBindTexture(GL_TEXTURE_2D, ssaoBlurColorTex);
+    glBindTexture(GL_TEXTURE_2D, ssao.blurredAOTexture());
     shader.setInt("ssaoMap", SSAO_UNIT);
     shader.setVec2("screenSize", glm::vec2((float)viewportWidth, (float)viewportHeight));
     shader.setInt("ssaoOn", tuning.ssaoEnabled ? 1 : 0);
 
-    // --- 3. one draw call per VISIBLE object in the scene, culled against cullFrustum ---
+    // --- 3. draw the scene, culled against cullFrustum ---
+    // Structural slabs (floor/wall/ceiling) can go through the instancer: grouped by material into
+    // up to 3 instanced draw calls instead of one per slab. When it's off, they fall through to the
+    // per-object loop below like everything else. The per-object path stays for the props (varied
+    // meshes) and is also the honest baseline of the instancing A/B.
+    shader.setInt("useInstanceModel", 0);   // default: model comes from the uniform (per-object path)
+    if (structuralInstancing)
+        instancer.drawStructural(shader, scene, cullFrustum, cullingEnabled, hideCeiling,
+                                 ALBEDO_UNIT, metrics);
+
     for (const RenderObject& obj : scene.objects) {
         // debug overhead view: drop the ceiling slabs, otherwise a top-down camera only sees
         // the closed roof and never the rooms below.
         if (hideCeiling && obj.material == MAT_CEILING)
             continue;
+
+        if (structuralInstancing && isStructural(obj.material))
+            continue;   // already drawn by the instancer above
 
         if (cullingEnabled && !isAABBVisible(cullFrustum, obj.worldBounds))
             continue;   // outside the view: skip it
@@ -801,110 +423,32 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
 
         metrics.drawCalls += 1;
         metrics.trianglesDrawn += (int)(mesh.indices.size() / 3);
+        metrics.objectsDrawn += 1;
     }
 
-    metrics.objectsCulled = metrics.objectsTotal - metrics.drawCalls;
+    // "culled" = total minus what we actually drew. Uses objectsDrawn (which the instancer also
+    // feeds), NOT drawCalls: with instancing on those differ (many slabs, few calls), so counting
+    // by draw calls would wrongly report the instanced slabs as culled.
+    metrics.objectsCulled = metrics.objectsTotal - metrics.objectsDrawn;
 
     // Fog reads back what the main pass just drew into sceneFBO, so it has to come after.
     // Hand it the exact list of lights (and their already-flickered, already-faded
     // intensities) the color pass just used, instead of letting it pick its own - see the
-    // "gotcha" on renderFog's declaration for why a second, independent selection popped.
+    // note on FogPass::render (render/fog_pass.h) for why a second, independent selection popped.
     std::vector<int> fogLightIndex(shadeLightIndex, shadeLightIndex + lightCount);
     std::vector<float> fogLightIntensity(shadeIntensity, shadeIntensity + lightCount);
     glm::mat4 invViewProj = glm::inverse(projection * view);
-    renderFog(scene, eye, invViewProj, fogLightIndex, fogLightIntensity, metrics);
-}
-
-void Renderer::renderFog(const Scene& scene, const glm::vec3& eye, const glm::mat4& invViewProj,
-                         const std::vector<int>& shadeLightIndex, const std::vector<float>& shadeLightIntensity,
-                         FrameMetrics& metrics) {
-    Framebuffer::unbind(viewportWidth, viewportHeight);   // draw the composited result to the screen
-
-    fogShader.use();
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, sceneFBO.colorTexture());
-    fogShader.setInt("sceneColor", 0);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, sceneFBO.depthTexture());
-    fogShader.setInt("sceneDepth", 1);
-
-    fogShader.setMat4("invViewProj", invViewProj);
-    fogShader.setVec3("viewPos", eye);
-    fogShader.setVec3("fogColor", tuning.fogColor);
-    fogShader.setFloat("fogDensity", tuning.fogEnabled ? tuning.fogDensity : 0.0f);
-    fogShader.setFloat("fogScatter", tuning.fogScatter);
-    fogShader.setFloat("fogMaxDistance", tuning.fogMaxDistance);
-    int steps = tuning.fogEnabled ? tuning.fogSteps : 1;   // density 0 makes 1 step a no-op, cheaply
-    fogShader.setInt("fogSteps", steps);
-    metrics.fogSteps = steps;
-
-    // Fog only marches with a handful of lights, not the full shaded set - narrow
-    // shadeLightIndex down to its MAX_FOG_LIGHTS nearest members. This sorts WITHIN an
-    // already-stable list rather than re-picking from scene.lights, so which lights make the
-    // cut only changes when the main pass's own set changes (already anti-popped) - nothing
-    // here can pop on its own anymore.
-    const int MAX_FOG_LIGHTS = 4;   // must match #define MAX_FOG_LIGHTS in shaders/fog.frag
-    std::vector<int> order(shadeLightIndex.size());
-    for (size_t i = 0; i < order.size(); ++i) order[i] = (int)i;
-    std::sort(order.begin(), order.end(), [&](int a, int b) {
-        glm::vec3 da = scene.lights[shadeLightIndex[a]].position - eye;
-        glm::vec3 db = scene.lights[shadeLightIndex[b]].position - eye;
-        return glm::dot(da, da) < glm::dot(db, db);
-    });
-    int numFogLights = std::min((int)order.size(), MAX_FOG_LIGHTS);
-    fogShader.setInt("numFogLights", numFogLights);
-    for (int i = 0; i < numFogLights; ++i) {
-        int slot = order[i];
-        const Light& light = scene.lights[shadeLightIndex[slot]];
-        std::string idx = "[" + std::to_string(i) + "]";
-
-        fogShader.setVec3("fogLightPositions" + idx, light.position);
-        fogShader.setVec3("fogLightColors" + idx, light.color);
-        fogShader.setFloat("fogLightIntensities" + idx, shadeLightIntensity[slot]);
-        fogShader.setFloat("fogLightRadii" + idx, light.radius);
-    }
-
-    glDisable(GL_DEPTH_TEST);   // full-screen quad, no depth test needed
-    glBindVertexArray(quadVAO);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    glBindVertexArray(0);
-    glEnable(GL_DEPTH_TEST);
-
-    // The fog composited COLOR onto the screen, but the scene DEPTH is still only in sceneFBO. Copy
-    // it onto the default framebuffer so anything drawn to the screen after render() returns - the
-    // fire particles, the debug frustum wireframe - depth-tests against the real scene again (before
-    // the fog pass existed, render() left the scene depth on the screen and they relied on that).
-    sceneFBO.blitDepthToScreen(viewportWidth, viewportHeight);
+    fog.render(sceneFBO, scene, eye, invViewProj, fogLightIndex, fogLightIntensity,
+               viewportWidth, viewportHeight,
+               { tuning.fogEnabled, tuning.fogColor, tuning.fogDensity, tuning.fogScatter,
+                 tuning.fogMaxDistance, tuning.fogSteps }, metrics);
 }
 
 void Renderer::clean() {
     shader.clean();
-    shadowShader.clean();
-    pointShadowShader.clean();
-    for (int i = 0; i < MAX_SPOT_SHADOWS; ++i) {
-        glDeleteFramebuffers(1, &shadowFBO[i]);
-        glDeleteTextures(1, &shadowMapTex[i]);
-    }
-    for (int i = 0; i < MAX_POINT_SHADOWS; ++i) {
-        glDeleteFramebuffers(1, &shadowCubeFBO[i]);
-        glDeleteTextures(1, &shadowCubeTex[i]);
-    }
-    glDeleteTextures(1, &pointShadowDepthCubeTex);
-
-    gBufferShader.clean();
-    ssaoShader.clean();
-    ssaoBlurShader.clean();
-    fogShader.clean();
+    shadows.clean();     // SPOT/POINT FBOs+textures + the two depth-only shaders
+    ssao.clean();        // G-buffer/AO FBOs+textures, 3 shaders, noise, kernel, own quad
+    fog.clean();         // fog shader + its own full-screen quad
     // sceneFBO cleans up its own GPU objects in its destructor (Framebuffer is RAII)
-    glDeleteFramebuffers(1, &gBufferFBO);
-    glDeleteTextures(1, &gPositionTex);
-    glDeleteTextures(1, &gNormalTex);
-    glDeleteRenderbuffers(1, &gDepthRBO);
-    glDeleteFramebuffers(1, &ssaoFBO);
-    glDeleteTextures(1, &ssaoColorTex);
-    glDeleteFramebuffers(1, &ssaoBlurFBO);
-    glDeleteTextures(1, &ssaoBlurColorTex);
-    glDeleteTextures(1, &ssaoNoiseTex);
-    glDeleteVertexArrays(1, &quadVAO);
-    glDeleteBuffers(1, &quadVBO);
+    instancer.clean();   // cube VAO/VBO/EBO + instance VBO of the structural instancer
 }
