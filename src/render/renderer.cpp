@@ -125,8 +125,13 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         return std::vector<int>(cands.begin(),
             cands.begin() + std::min((size_t)budget, cands.size()));
         };
-    std::vector<int> chosenSpot  = pickCasters(spotCandidates,  MAX_SPOT_SHADOWS);
-    std::vector<int> chosenPoint = pickCasters(pointCandidates, MAX_POINT_SHADOWS);
+    // Budget is the compile-time array size, but capped at RUNTIME by maxSpotShadows/maxPointShadows
+    // (clamped to [0, compile-time max]). That runtime cap is what the benchmark's "scaling the number
+    // of shadow-casting lights" experiment sweeps - fewer casters => fewer depth passes => less cost.
+    int spotBudget  = std::max(0, std::min(MAX_SPOT_SHADOWS,  maxSpotShadows));
+    int pointBudget = std::max(0, std::min(MAX_POINT_SHADOWS, maxPointShadows));
+    std::vector<int> chosenSpot  = pickCasters(spotCandidates,  spotBudget);
+    std::vector<int> chosenPoint = pickCasters(pointCandidates, pointBudget);
 
     for (int idx : chosenSpot) {
         spotShadowLightIndex[numSpotShadows] = idx;

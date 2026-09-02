@@ -126,6 +126,8 @@ int main() {
     bool savedCulling = cullingEnabled;   // user settings captured at batch start, restored after
     bool savedSsao = false;               // (set from renderer.tuning when the batch starts)
     bool savedStructuralInstancing = false;   // (set from renderer.structuralInstancing at batch start)
+    int  savedMaxSpotShadows  = Renderer::MAX_SPOT_SHADOWS;    // shadow-caster budget, restored after a batch
+    int  savedMaxPointShadows = Renderer::MAX_POINT_SHADOWS;
 
     // --- particles (M3): instanced sparks/embers rising from the flames ---
     ParticleSystem particles;
@@ -156,7 +158,7 @@ int main() {
         cullingEnabled, vsyncEnabled, debugCamEnabled, showFrustumWire, debugCamFollowYaw,
         debugCamHeight, firstMouse,
         particleCount, savedCulling, savedSsao, savedInstanced, savedParticleCount,
-        savedStructuralInstancing,
+        savedStructuralInstancing, savedMaxSpotShadows, savedMaxPointShadows,
         metrics, window
     };
 
@@ -184,6 +186,8 @@ int main() {
             cullingEnabled = c.culling;
             renderer.tuning.ssaoEnabled = c.ssao;
             renderer.structuralInstancing = c.structuralInstanced;
+            renderer.maxSpotShadows = c.maxSpotShadows;     // clamped to the compile-time max in renderInternal
+            renderer.maxPointShadows = c.maxPointShadows;
             particles.instanced = c.instanced;
             particleCount = c.particleCount;
             particles.setCount(particleCount);
@@ -192,6 +196,8 @@ int main() {
             cullingEnabled = savedCulling;
             renderer.tuning.ssaoEnabled = savedSsao;
             renderer.structuralInstancing = savedStructuralInstancing;
+            renderer.maxSpotShadows = savedMaxSpotShadows;
+            renderer.maxPointShadows = savedMaxPointShadows;
             particles.instanced = savedInstanced;
             particleCount = savedParticleCount;
             particles.setCount(particleCount);

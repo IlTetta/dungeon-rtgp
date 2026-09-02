@@ -25,6 +25,11 @@ struct ExperimentConfig {
     bool structuralInstanced;    // structural geometry (floor/wall/ceiling) drawn instanced vs per-object
     bool instanced;              // particles drawn instanced (1 call) vs naive (1 call per particle)
     int  particleCount;          // number of particles for this run
+    // Runtime shadow-caster budget for this run (the "scaling #lights" sweep). Default 99 is a
+    // sentinel meaning "full budget": the renderer clamps it to the compile-time max, so the sweeps
+    // that do NOT test this knob (culling / particles / instancing) just run with all shadows on.
+    int  maxSpotShadows  = 99;
+    int  maxPointShadows = 99;
 };
 
 class ExperimentRunner {

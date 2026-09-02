@@ -66,6 +66,8 @@ struct HudState {
     bool&  savedInstanced;
     int&   savedParticleCount;
     bool&  savedStructuralInstancing;
+    int&   savedMaxSpotShadows;
+    int&   savedMaxPointShadows;
 
     // this frame's metrics (the panels only display them)
     const FrameMetrics& metrics;
@@ -116,6 +118,11 @@ private:
         if (ImGui::CollapsingHeader("Shadow tuning")) {
             ImGui::Checkbox("Shadows enabled", &s.renderer.tuning.shadowsEnabled);
             ImGui::SliderFloat("Ambient", &s.renderer.tuning.ambient, 0.0f, 0.5f);
+            // Runtime cap on how many lights cast a shadow (the "scaling #lights" experiment knob).
+            // Watch "Shadow lights"/"passes" in the metrics and the frame time react as you drag these.
+            ImGui::TextDisabled("Shadow-light budget (benchmark)");
+            ImGui::SliderInt("Max SPOT casters",  &s.renderer.maxSpotShadows,  0, Renderer::MAX_SPOT_SHADOWS);
+            ImGui::SliderInt("Max POINT casters", &s.renderer.maxPointShadows, 0, Renderer::MAX_POINT_SHADOWS);
             ImGui::TextDisabled("SPOT (wall torches)");
             ImGui::SliderFloat("Spot bias max", &s.renderer.tuning.spotBiasMax, 0.0f, 0.2f);
             ImGui::SliderFloat("Spot bias min", &s.renderer.tuning.spotBiasMin, 0.0f, 0.05f);
@@ -310,6 +317,8 @@ private:
                     s.savedInstanced = s.particles.instanced;
                     s.savedParticleCount = s.particleCount;
                     s.savedStructuralInstancing = s.renderer.structuralInstancing;
+                    s.savedMaxSpotShadows = s.renderer.maxSpotShadows;
+                    s.savedMaxPointShadows = s.renderer.maxPointShadows;
                     // build the config list: culling ON/OFF, optionally crossed with SSAO on/off.
                     // Every other knob (SSAO when not swept, structural instancing, particles) is kept
                     // at the user's current value in every run, so the culling comparison is fair (only
@@ -346,6 +355,8 @@ private:
                     s.savedInstanced = s.particles.instanced;
                     s.savedParticleCount = s.particleCount;
                     s.savedStructuralInstancing = s.renderer.structuralInstancing;
+                    s.savedMaxSpotShadows = s.renderer.maxSpotShadows;
+                    s.savedMaxPointShadows = s.renderer.maxPointShadows;
                     s.experiments.configs.clear();
                     s.experiments.configs.push_back({ "instancedON",  s.savedCulling, s.savedSsao, s.savedStructuralInstancing, true,  s.particleCount });
                     s.experiments.configs.push_back({ "instancedOFF", s.savedCulling, s.savedSsao, s.savedStructuralInstancing, false, s.particleCount });
@@ -373,12 +384,48 @@ private:
                     s.savedInstanced = s.particles.instanced;
                     s.savedParticleCount = s.particleCount;
                     s.savedStructuralInstancing = s.renderer.structuralInstancing;
+                    s.savedMaxSpotShadows = s.renderer.maxSpotShadows;
+                    s.savedMaxPointShadows = s.renderer.maxPointShadows;
                     s.experiments.configs.clear();
                     s.experiments.configs.push_back({ "structInstON",  s.savedCulling, s.savedSsao, true,  s.savedInstanced, s.savedParticleCount });
                     s.experiments.configs.push_back({ "structInstOFF", s.savedCulling, s.savedSsao, false, s.savedInstanced, s.savedParticleCount });
                     s.experiments.start(s.bench, s.dungeonSeed, Renderer::MAX_SHADOW_LIGHTS);
                     benchStatus_ = s.experiments.running()
                         ? "Running structural instancing sweep (ON vs OFF)..."
+                        : "Cannot run: record or load a path first";
+                }
+
+                // --- shadow-light sweep: scale the number of shadow-casting lights ---
+                // The proposal's "scaling the number of dynamic lights" experiment: replay the same
+                // path with a growing SPOT shadow budget (the dominant per-light cost - each caster is
+                // a depth pass) and see frame time rise. POINT budget + everything else stay at the
+                // user's current values. Read frame_ms vs shadow_lights / shadow_passes across the CSVs.
+                if (ImGui::Button("Run shadow-light sweep")) {
+                    if (s.bench.path().seed != s.dungeonSeed) {
+                        s.dungeonSeed = s.bench.path().seed;
+                        buildWorld(s.dungeonSeed, s.params, s.lightingParams, s.scene, s.chainSystem, s.camera);
+                        s.renderer.resetLightFades();   // new scene, new lights - drop stale fade state
+                        s.firstMouse = true;
+                    }
+                    s.savedCulling = s.cullingEnabled;
+                    s.savedSsao = s.renderer.tuning.ssaoEnabled;
+                    s.savedInstanced = s.particles.instanced;
+                    s.savedParticleCount = s.particleCount;
+                    s.savedStructuralInstancing = s.renderer.structuralInstancing;
+                    s.savedMaxSpotShadows = s.renderer.maxSpotShadows;
+                    s.savedMaxPointShadows = s.renderer.maxPointShadows;
+                    s.experiments.configs.clear();
+                    // increasing SPOT-caster counts (capped at the compile-time budget)
+                    const int spotSteps[] = { 1, 2, 4, 6, 8 };
+                    for (int n : spotSteps) {
+                        if (n > Renderer::MAX_SPOT_SHADOWS) continue;
+                        s.experiments.configs.push_back({ "shadowSpot" + std::to_string(n),
+                            s.savedCulling, s.savedSsao, s.savedStructuralInstancing, s.savedInstanced,
+                            s.savedParticleCount, n, s.savedMaxPointShadows });
+                    }
+                    s.experiments.start(s.bench, s.dungeonSeed, Renderer::MAX_SHADOW_LIGHTS);
+                    benchStatus_ = s.experiments.running()
+                        ? "Running shadow-light sweep (SPOT casters 1..8)..."
                         : "Cannot run: record or load a path first";
                 }
                 if (s.bench.path().empty())

@@ -153,6 +153,13 @@ public:
     static const int MAX_POINT_SHADOWS = ShadowMaps::MAX_POINT;
     static const int MAX_SHADOW_LIGHTS = MAX_SPOT_SHADOWS + MAX_POINT_SHADOWS;   // total casters
 
+    // RUNTIME caps on how many lights actually cast a shadow this frame, clamped to the compile-time
+    // budgets above. This is the "scaling the number of dynamic lights" knob (proposal S6): the
+    // benchmark sweeps it, and frame time responds through the number of shadow depth passes (the
+    // dominant per-light cost). Default = full budget. Editable from the HUD "Shadow tuning" panel.
+    int maxSpotShadows  = MAX_SPOT_SHADOWS;
+    int maxPointShadows = MAX_POINT_SHADOWS;
+
     // Loads and compiles the given vertex/fragment shader pair (paths relative to the
     // working directory; see the shaders copy step in CMakeLists.txt). main.cpp passes
     // "shaders/ggx.vert" / "shaders/ggx.frag" by default.
