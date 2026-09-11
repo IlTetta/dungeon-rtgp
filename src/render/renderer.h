@@ -61,6 +61,11 @@ public:
     // draw count is a constant 3 regardless of culling). Flip it for the instancing A/B.
     bool structuralInstancing = false;
 
+    // Demo aid (not a perf option): when false, the color pass shades with 0 direct lights, so only
+    // the ambient*albedo*AO term remains. Lets the video isolate SSAO (raise Ambient, toggle SSAO)
+    // and show the dungeon unlit. Default true = normal lighting.
+    bool directLightsEnabled = true;
+
     // Live-tunable shading/shadow constants, sent to ggx.frag as uniforms every frame (see
     // renderInternal()). main.cpp exposes them in an ImGui panel to dial them in without
     // recompiling; defaults below are what looked right during testing.

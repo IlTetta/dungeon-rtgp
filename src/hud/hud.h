@@ -16,6 +16,8 @@
 // This is header-only like the rest of world/, bench/, engine/, so it needs no CMake change.
 
 #include <string>
+#include <cstdio>    // snprintf, for the frame-time plot overlay label
+#include <cfloat>    // FLT_MAX, to auto-scale the frame-time plot
 
 #include <glad/glad.h>
 #include <glfw/glfw3.h>      // GLFWwindow, glfwSwapInterval, glfwGetTime (VSync toggle / random seed)
@@ -82,6 +84,7 @@ public:
     // ImGui::NewFrame()), same place the panels used to sit in the loop, so the behaviour is
     // identical.
     void draw(HudState& s) {
+        drawConfigBanner(s);
         drawPerformancePanel(s);
         drawLightingPanel(s);
         drawBenchmarkPanel(s);
@@ -94,10 +97,46 @@ private:
     std::string benchStatus_;        // last Save/Load/Replay result, shown in the panel
     bool        sweepSSAO_ = false;  // if set, "Run experiments" also toggles SSAO (2x2 matrix)
 
+    // Live frame-time plot (demo aid): a small ring buffer of the last frames, drawn as a graph in
+    // the Performance panel so the effect of a toggle is visible as a moving curve, not just a number.
+    static const int kFrameHist = 120;
+    float frameMs_[kFrameHist] = {};
+    int   frameMsHead_ = 0;
+
+    // --- Config banner: a small always-on overlay listing the active toggles, so a viewer of the
+    // demo video always knows the current configuration even when the panels are collapsed. Drag it
+    // wherever it reads best. (Demo aid.) ---
+    void drawConfigBanner(HudState& s) {
+        ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowBgAlpha(0.55f);
+        ImGui::Begin("Config", nullptr,
+                     ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize);
+        auto flag = [](const char* name, bool on) {
+            ImGui::TextColored(on ? ImVec4(0.45f, 1.0f, 0.45f, 1.0f) : ImVec4(1.0f, 0.5f, 0.5f, 1.0f),
+                               "%s: %s", name, on ? "ON" : "OFF");
+        };
+        flag("Culling",       s.cullingEnabled);
+        flag("Shadows",       s.renderer.tuning.shadowsEnabled);
+        flag("SSAO",          s.renderer.tuning.ssaoEnabled);
+        flag("Fog",           s.renderer.tuning.fogEnabled);
+        flag("Instancing",    s.renderer.structuralInstancing);
+        flag("Direct lights", s.renderer.directLightsEnabled);
+        ImGui::End();
+    }
+
     // --- Performance window: metrics + shadow/fog tuning + dungeon regen + debug camera ---
     void drawPerformancePanel(HudState& s) {
         ImGui::Begin("Performance");
         ImGui::Text("FPS: %.0f  (%.2f ms)", s.metrics.fps, s.metrics.frameTimeMs);
+        // live frame-time graph (demo aid): push this frame, plot the last kFrameHist. The curve
+        // reacts as you toggle fog steps / shadow budget / instancing (with VSync OFF) - much more
+        // readable on camera than a single number. Auto-scaled (0..max in the window).
+        frameMs_[frameMsHead_] = s.metrics.frameTimeMs;
+        frameMsHead_ = (frameMsHead_ + 1) % kFrameHist;
+        char ftOverlay[32];
+        snprintf(ftOverlay, sizeof(ftOverlay), "%.2f ms", s.metrics.frameTimeMs);
+        ImGui::PlotLines("##frametime", frameMs_, kFrameHist, frameMsHead_, ftOverlay,
+                         0.0f, FLT_MAX, ImVec2(0, 48));
         ImGui::Separator();
         ImGui::Text("Objects drawn : %d / %d", s.metrics.objectsDrawn, s.metrics.objectsTotal);
         ImGui::Text("Objects culled: %d", s.metrics.objectsCulled);
@@ -117,7 +156,12 @@ private:
         ImGui::Separator();
         if (ImGui::CollapsingHeader("Shadow tuning")) {
             ImGui::Checkbox("Shadows enabled", &s.renderer.tuning.shadowsEnabled);
-            ImGui::SliderFloat("Ambient", &s.renderer.tuning.ambient, 0.0f, 0.5f);
+            // Demo aid: turn the direct lights OFF so only ambient*albedo*AO remains -> the SSAO
+            // "showcase" (Direct lights OFF, raise Ambient, then toggle "SSAO enabled" below and the
+            // occlusion is the only thing darkening). Also gives the "dark dungeon" shot - for that,
+            // turn Particles off too, otherwise sparks glow with no light around.
+            ImGui::Checkbox("Direct lights", &s.renderer.directLightsEnabled);
+            ImGui::SliderFloat("Ambient", &s.renderer.tuning.ambient, 0.0f, 1.0f);   // 1.0 for a flat SSAO showcase
             // Runtime cap on how many lights cast a shadow (the "scaling #lights" experiment knob).
             // Watch "Shadow lights"/"passes" in the metrics and the frame time react as you drag these.
             ImGui::TextDisabled("Shadow-light budget (benchmark)");

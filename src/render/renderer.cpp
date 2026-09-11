@@ -288,7 +288,13 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         shadeLightIndex[lightCount++] = shadowLightIndex[slot];
     for (int idx : chosenLights)
         shadeLightIndex[lightCount++] = idx;
-    metrics.activeLights = lightCount;
+
+    // Demo aid: the "Direct lights" toggle forces the shaded light count to 0 so the surfaces (and
+    // the fog) get NO direct contribution - only the ambient*albedo*AO term survives. That isolates
+    // SSAO on camera (raise Ambient, then flip SSAO) and gives the "dark dungeon" shot. Does not
+    // touch the shadow passes (harmless waste while off) nor the light selection above.
+    int shadedLightCount = directLightsEnabled ? lightCount : 0;
+    metrics.activeLights = shadedLightCount;
 
     // Same "instant on, faded off" shape as shadowWeight above - a torch already burning gets
     // its shading slot back immediately, losing one still fades out over lightFadeSeconds.
@@ -326,7 +332,7 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     // second, independent light selection (see the note on FogPass::render in render/fog_pass.h).
     float shadeIntensity[MAX_LIGHTS];
 
-    shader.setInt("numLights", lightCount);
+    shader.setInt("numLights", shadedLightCount);
     for (int i = 0; i < lightCount; ++i) {
         const Light& light = scene.lights[shadeLightIndex[i]];
         std::string idx = "[" + std::to_string(i) + "]";
@@ -440,8 +446,8 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     // Hand it the exact list of lights (and their already-flickered, already-faded
     // intensities) the color pass just used, instead of letting it pick its own - see the
     // note on FogPass::render (render/fog_pass.h) for why a second, independent selection popped.
-    std::vector<int> fogLightIndex(shadeLightIndex, shadeLightIndex + lightCount);
-    std::vector<float> fogLightIntensity(shadeIntensity, shadeIntensity + lightCount);
+    std::vector<int> fogLightIndex(shadeLightIndex, shadeLightIndex + shadedLightCount);
+    std::vector<float> fogLightIntensity(shadeIntensity, shadeIntensity + shadedLightCount);
     glm::mat4 invViewProj = glm::inverse(projection * view);
     fog.render(sceneFBO, scene, eye, invViewProj, fogLightIndex, fogLightIntensity,
                viewportWidth, viewportHeight,
