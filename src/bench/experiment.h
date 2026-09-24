@@ -30,21 +30,34 @@ struct ExperimentConfig {
     // that do NOT test this knob (culling / particles / instancing) just run with all shadows on.
     int  maxSpotShadows  = 99;
     int  maxPointShadows = 99;
+    // Fog ray-march step count for this run (the "fog quality vs FPS" sweep). Default -1 is a
+    // sentinel meaning "leave the fog steps at the user's current value", so the sweeps that do NOT
+    // test this knob keep fog untouched; only the fog sweep sets a real (positive) step count.
+    int  fogSteps        = -1;
 };
 
 class ExperimentRunner {
 public:
     std::vector<ExperimentConfig> configs;   // the batch to run, filled by main before start()
 
-    bool running() const { return running_; }
-    int  currentIndex() const { return index_; }
-    int  count() const { return (int)configs.size(); }
-    const ExperimentConfig& currentConfig() const { return configs[index_]; }
+    bool running() const { 
+        return running_;
+    }
+    int  currentIndex() const { 
+        return index_; 
+    }
+    int  count() const { 
+        return (int)configs.size(); 
+    }
+    const ExperimentConfig& currentConfig() const {
+        return configs[index_];
+    }
 
     // Begin the batch. seed / shadowBudget go into every CSV header; seed also names the files.
     // Does nothing (running() stays false) if there is no config or no path loaded.
     void start(const BenchmarkHarness& bench, unsigned int seed, int shadowBudget) {
-        if (configs.empty() || bench.path().empty()) return;
+        if (configs.empty() || bench.path().empty()) 
+            return;
         seed_ = seed;
         shadowBudget_ = shadowBudget;
         index_ = 0;
@@ -54,17 +67,22 @@ public:
 
     // Stop the batch early (aborts the current run's CSV, which stays as far as it got).
     void stop(BenchmarkHarness& bench) {
-        if (running_) { bench.stopReplay(); running_ = false; }
+        if (running_) {
+            bench.stopReplay();
+            running_ = false; 
+        }
     }
 
     // Call once per frame at the TOP of the loop, before bench.beginFrame(). Starts the current
     // config's replay, and when a replay finishes advances to the next config until none are left.
     void update(BenchmarkHarness& bench) {
-        if (!running_) return;
+        if (!running_)
+            return;
 
         // while a run is playing there is nothing to do: the harness logs each frame, and
         // bench.beginFrame() ends the replay by itself when the path is over.
-        if (bench.mode() == BenchmarkHarness::REPLAYING) return;
+        if (bench.mode() == BenchmarkHarness::REPLAYING) 
+            return;
 
         // no run is playing: the previous config just finished (started_), or we are at the start
         if (started_) {

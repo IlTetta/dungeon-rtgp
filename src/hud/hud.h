@@ -70,6 +70,7 @@ struct HudState {
     bool&  savedStructuralInstancing;
     int&   savedMaxSpotShadows;
     int&   savedMaxPointShadows;
+    int&   savedFogSteps;
 
     // this frame's metrics (the panels only display them)
     const FrameMetrics& metrics;
@@ -363,6 +364,7 @@ private:
                     s.savedStructuralInstancing = s.renderer.structuralInstancing;
                     s.savedMaxSpotShadows = s.renderer.maxSpotShadows;
                     s.savedMaxPointShadows = s.renderer.maxPointShadows;
+                    s.savedFogSteps = s.renderer.tuning.fogSteps;
                     // build the config list: culling ON/OFF, optionally crossed with SSAO on/off.
                     // Every other knob (SSAO when not swept, structural instancing, particles) is kept
                     // at the user's current value in every run, so the culling comparison is fair (only
@@ -401,6 +403,7 @@ private:
                     s.savedStructuralInstancing = s.renderer.structuralInstancing;
                     s.savedMaxSpotShadows = s.renderer.maxSpotShadows;
                     s.savedMaxPointShadows = s.renderer.maxPointShadows;
+                    s.savedFogSteps = s.renderer.tuning.fogSteps;
                     s.experiments.configs.clear();
                     s.experiments.configs.push_back({ "instancedON",  s.savedCulling, s.savedSsao, s.savedStructuralInstancing, true,  s.particleCount });
                     s.experiments.configs.push_back({ "instancedOFF", s.savedCulling, s.savedSsao, s.savedStructuralInstancing, false, s.particleCount });
@@ -430,6 +433,7 @@ private:
                     s.savedStructuralInstancing = s.renderer.structuralInstancing;
                     s.savedMaxSpotShadows = s.renderer.maxSpotShadows;
                     s.savedMaxPointShadows = s.renderer.maxPointShadows;
+                    s.savedFogSteps = s.renderer.tuning.fogSteps;
                     s.experiments.configs.clear();
                     s.experiments.configs.push_back({ "structInstON",  s.savedCulling, s.savedSsao, true,  s.savedInstanced, s.savedParticleCount });
                     s.experiments.configs.push_back({ "structInstOFF", s.savedCulling, s.savedSsao, false, s.savedInstanced, s.savedParticleCount });
@@ -458,6 +462,7 @@ private:
                     s.savedStructuralInstancing = s.renderer.structuralInstancing;
                     s.savedMaxSpotShadows = s.renderer.maxSpotShadows;
                     s.savedMaxPointShadows = s.renderer.maxPointShadows;
+                    s.savedFogSteps = s.renderer.tuning.fogSteps;
                     s.experiments.configs.clear();
                     // increasing SPOT-caster counts (capped at the compile-time budget)
                     const int spotSteps[] = { 1, 2, 4, 6, 8 };
@@ -470,6 +475,40 @@ private:
                     s.experiments.start(s.bench, s.dungeonSeed, Renderer::MAX_SHADOW_LIGHTS);
                     benchStatus_ = s.experiments.running()
                         ? "Running shadow-light sweep (SPOT casters 1..8)..."
+                        : "Cannot run: record or load a path first";
+                }
+
+                // --- fog sweep: scale the ray-march step count (fog quality vs FPS) ---
+                // The proposal's "fog quality vs FPS" experiment: replay the same path with a growing
+                // number of ray-march steps (the fog cost knob) and see the frame time rise. Everything
+                // else stays at the user's current values. Read frame_ms vs the fog_steps column across
+                // the CSVs. NB: fog must be enabled (it is by default) or the step count has no effect.
+                if (ImGui::Button("Run fog sweep")) {
+                    if (s.bench.path().seed != s.dungeonSeed) {
+                        s.dungeonSeed = s.bench.path().seed;
+                        buildWorld(s.dungeonSeed, s.params, s.lightingParams, s.scene, s.chainSystem, s.camera);
+                        s.renderer.resetLightFades();   // new scene, new lights - drop stale fade state
+                        s.firstMouse = true;
+                    }
+                    s.savedCulling = s.cullingEnabled;
+                    s.savedSsao = s.renderer.tuning.ssaoEnabled;
+                    s.savedInstanced = s.particles.instanced;
+                    s.savedParticleCount = s.particleCount;
+                    s.savedStructuralInstancing = s.renderer.structuralInstancing;
+                    s.savedMaxSpotShadows = s.renderer.maxSpotShadows;
+                    s.savedMaxPointShadows = s.renderer.maxPointShadows;
+                    s.savedFogSteps = s.renderer.tuning.fogSteps;
+                    s.experiments.configs.clear();
+                    // increasing ray-march step counts (the HUD "Steps" slider goes up to 64)
+                    const int fogStepValues[] = { 4, 8, 12, 16, 24, 32, 48, 64 };
+                    for (int n : fogStepValues) {
+                        s.experiments.configs.push_back({ "fogSteps" + std::to_string(n),
+                            s.savedCulling, s.savedSsao, s.savedStructuralInstancing, s.savedInstanced,
+                            s.savedParticleCount, s.savedMaxSpotShadows, s.savedMaxPointShadows, n });
+                    }
+                    s.experiments.start(s.bench, s.dungeonSeed, Renderer::MAX_SHADOW_LIGHTS);
+                    benchStatus_ = s.experiments.running()
+                        ? "Running fog sweep (ray-march steps 4..64)..."
                         : "Cannot run: record or load a path first";
                 }
                 if (s.bench.path().empty())

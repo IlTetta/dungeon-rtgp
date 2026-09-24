@@ -5,13 +5,19 @@
 //
 // Built as a SEPARATE executable (target "bsp_test"), so we can run it without the 3D window.
 
+#include <cstdlib>   // std::strtoul, to read an optional seed from the command line
+
 #include "dungeon/dungeon_generator.h"
 #include "world/dungeon_geometry.h"
 
-int main() {
+int main(int argc, char** argv) {
     int width = 60;
     int height = 30;
+    // Default to the reference seed, but allow "bsp_test <seed>" so we can preview any dungeon's
+    // ASCII map (useful for picking the extra benchmark seeds) without recompiling.
     unsigned int seed = 12345;
+    if (argc > 1)
+        seed = (unsigned int)std::strtoul(argv[1], nullptr, 10);
 
     DungeonGenerator generator(width, height, seed);
     Dungeon dungeon = generator.generate();

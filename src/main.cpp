@@ -128,6 +128,7 @@ int main() {
     bool savedStructuralInstancing = false;   // (set from renderer.structuralInstancing at batch start)
     int  savedMaxSpotShadows  = Renderer::MAX_SPOT_SHADOWS;    // shadow-caster budget, restored after a batch
     int  savedMaxPointShadows = Renderer::MAX_POINT_SHADOWS;
+    int  savedFogSteps        = 12;    // fog ray-march steps (ShadingTuning default), set at batch start, restored after
 
     // --- particles (M3): instanced sparks/embers rising from the flames ---
     ParticleSystem particles;
@@ -158,7 +159,7 @@ int main() {
         cullingEnabled, vsyncEnabled, debugCamEnabled, showFrustumWire, debugCamFollowYaw,
         debugCamHeight, firstMouse,
         particleCount, savedCulling, savedSsao, savedInstanced, savedParticleCount,
-        savedStructuralInstancing, savedMaxSpotShadows, savedMaxPointShadows,
+        savedStructuralInstancing, savedMaxSpotShadows, savedMaxPointShadows, savedFogSteps,
         metrics, window
     };
 
@@ -188,6 +189,7 @@ int main() {
             renderer.structuralInstancing = c.structuralInstanced;
             renderer.maxSpotShadows = c.maxSpotShadows;     // clamped to the compile-time max in renderInternal
             renderer.maxPointShadows = c.maxPointShadows;
+            if (c.fogSteps > 0) renderer.tuning.fogSteps = c.fogSteps;   // -1 sentinel = leave fog untouched
             particles.instanced = c.instanced;
             particleCount = c.particleCount;
             particles.setCount(particleCount);
@@ -198,6 +200,7 @@ int main() {
             renderer.structuralInstancing = savedStructuralInstancing;
             renderer.maxSpotShadows = savedMaxSpotShadows;
             renderer.maxPointShadows = savedMaxPointShadows;
+            renderer.tuning.fogSteps = savedFogSteps;
             particles.instanced = savedInstanced;
             particleCount = savedParticleCount;
             particles.setCount(particleCount);
