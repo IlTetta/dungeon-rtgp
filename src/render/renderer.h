@@ -89,18 +89,9 @@ public:
         float pointNormalOffset = 0.06f;   // POINT: push along N before the distance test
         float pointPCFRadius    = 0.04f;   // POINT shadow softness (0 = hard single-tap)
 
-        // How forgiving the shadow-caster selection is about swapping lights as the player
-        // moves: a light that already has a slot keeps it as long as it stays within
-        // shadowHysteresisMargin of the cutoff distance, instead of popping out the instant
-        // something else edges closer; shadowFadeSeconds is how long a shadow takes to fade
-        // out once it does lose its slot (gaining one back is instant - the torch was already
-        // burning, there's nothing to fade in). Every light in the dungeon is a POINT,
-        // shadow-casting light (see dungeon_geometry.h / props.h), so it's normal to have
-        // 6-10+ candidates within a few units of the player against a budget of
-        // MAX_SHADOW_LIGHTS real shadows - margin/fade keep that ranking churn from reading
-        // as a flicker.
-        float shadowHysteresisMargin = 1.6f;
-        float shadowFadeSeconds      = 0.5f;
+        // How long a shadow takes to fade out when its light drops out of the nearest-N casters
+        // (gaining a slot is instant, the torch was already burning). The fade hides the pop.
+        float shadowFadeSeconds = 0.5f;
 
         // Same idea for the SHADING light selection (which lights get a uniform slot at all,
         // not just which ones get a shadow): with more than MAX_LIGHTS torches nearby, a light

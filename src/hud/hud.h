@@ -178,7 +178,6 @@ private:
             ImGui::SliderFloat("Point normal offset", &s.renderer.tuning.pointNormalOffset, 0.0f, 0.3f);
             ImGui::SliderFloat("Point softness", &s.renderer.tuning.pointPCFRadius, 0.0f, 0.15f);
             ImGui::TextDisabled("Pop-in fix (shadows)");
-            ImGui::SliderFloat("Hysteresis margin", &s.renderer.tuning.shadowHysteresisMargin, 1.0f, 2.0f);
             ImGui::SliderFloat("Fade seconds", &s.renderer.tuning.shadowFadeSeconds, 0.0f, 1.5f);
             ImGui::TextDisabled("Pop-in fix (lights, >32 nearby)");
             ImGui::SliderFloat("Light hysteresis margin", &s.renderer.tuning.lightHysteresisMargin, 1.0f, 2.0f);
