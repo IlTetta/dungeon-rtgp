@@ -1,18 +1,12 @@
 #pragma once
 
-// SHARED FILE: da cambiare insieme all'inizio di ogni milestone
-
-// The "kind" of surface an object has.
-// IO sets this value when I builds the scene,
-// YOU decides how to actually render each kind (which shader / uniforms).
-// We use a plain enum and put a "MAT_" prefix in front of every name, because a plain
-// enum puts its names directly in the surrounding scope, so without a prefix a name
-// like FLOOR could easily clash with something else.
+// The KIND of surface of an object, used by the game logic: the collisions read it to know what
+// blocks the player, and the renderer to know what to skip.
 enum MaterialId {
     MAT_FLOOR,
     MAT_WALL,
     MAT_CEILING,
-    MAT_PROP,   // solid props (blocks the player): columns, statues, barrels, ...
-    MAT_CHAIN,  // dynamic, non-blocking decor (chains): the player walks through and swings them
-    MAT_DECOR   // static, non-blocking decor (wall torches, ...): drawn, but never blocks the player
+    MAT_PROP,   // solid props that block the player: columns, statues, barrels, ...
+    MAT_CHAIN,  // hanging chains: dynamic, the player walks through them and swings them
+    MAT_DECOR   // torches and braziers: drawn, but they do not block and do not cast shadows
 };

@@ -1,28 +1,22 @@
 #pragma once
 
-// Mesh class.
-// A Mesh owns the geometry of one object ON THE GPU: the list of vertices, the list of
-// indices (which vertices form each triangle), and the three OpenGL buffers that hold
-// this data on the graphics card:
-//   VBO (Vertex Buffer Object)  -> the vertex data (position, normal, uv, ...)
-//   EBO (Element Buffer Object) -> the indices of the triangles
-//   VAO (Vertex Array Object)   -> the "recipe" that tells OpenGL how to read the VBO
-//
-// Like our Shader, this header includes glad by itself.
+// Mesh: the geometry of one object, on the GPU. It keeps the vertices and the indices
+// and owns the three OpenGL objects that hold them:
+//   VBO (Vertex Buffer Object): the vertex data (position, normal, uv, ...)
+//   EBO (Element Buffer Object): the triangle indices
+//   VAO (Vertex Array Object): remembers how to read the VBO (the attribute layout) and the EBO
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
 
 #include <vector>
 
-// One vertex of the mesh, with all its attributes.
-// The order of these fields matters: in setupMesh() below we describe them to OpenGL
-// using their offset inside this struct.
+// One vertex
 struct Vertex {
     glm::vec3 Position;
     glm::vec3 Normal;
-    glm::vec2 TexCoords;   // uv coordinates for texturing
-    glm::vec3 Tangent;     // needed for normal mapping (M2); computed by Assimp when loading
+    glm::vec2 TexCoords;
+    glm::vec3 Tangent;
     glm::vec3 Bitangent;
 };
 
@@ -32,45 +26,37 @@ public:
     std::vector<GLuint> indices;
     GLuint VAO;
 
-    // --- Why "move only"? ---
-    // A Mesh owns GPU buffers. If we allowed copying a Mesh, we would have two C++ objects
-    // pointing at the SAME GPU buffers; when the first one is destroyed it would delete
-    // those buffers, and the second one would be left with invalid ids -> bugs / crashes.
-    // So we FORBID copying, and instead we allow MOVING (transferring the ownership of the
-    // buffers from one object to another). This way there is always exactly one owner.
-
-    // forbid copy: these two lines make "Mesh a = b;" and "a = b;" not compile
+    // Why MOVE ONLY: a Mesh owns GPU buffers. If we could copy it, two objects would have the
+    // same buffer ids: the first one destroyed would delete the buffers and the other one would
+    // keep invalid ids. So copying is forbidden and moving is allowed (the ownership passes to
+    // the new object): there is always exactly one owner.
     Mesh(const Mesh& other) = delete;
     Mesh& operator=(const Mesh& other) = delete;
 
-    // Constructor.
-    // N.B. it takes the vectors by reference and MOVES their content into the mesh, so after
-    // you build a Mesh the vectors you passed become empty. This avoids copying all the
-    // vertex data (which can be big).
+    // The constructor MOVES the two vectors into the mesh (no copy of the vertex data), so the
+    // vectors passed in are empty afterwards.
     Mesh(std::vector<Vertex>& vertices, std::vector<GLuint>& indices) noexcept
         : vertices(std::move(vertices)), indices(std::move(indices))
     {
         setupMesh();
     }
 
-    // Move constructor: the new mesh steals the buffers from "other".
+    // Move constructor: take the buffers of "other" and set other.VAO = 0, so its destructor does
+    // not delete them. VAO != 0 is our "I own the buffers" flag.
     Mesh(Mesh&& other) noexcept
         : vertices(std::move(other.vertices)),
           indices(std::move(other.indices)),
           VAO(other.VAO), VBO(other.VBO), EBO(other.EBO)
     {
-        // we set other.VAO to 0 so that when "other" is destroyed it does NOT delete our
-        // buffers (see freeGPU(): it only deletes if VAO != 0). We use VAO as the "do I
-        // still own the buffers?" flag.
         other.VAO = 0;
     }
 
-    // Move assignment: same idea, but on an object that already exists.
+    // Move assignment: same idea, but first we free the buffers we already own, otherwise
+    // they would leak.
     Mesh& operator=(Mesh&& other) noexcept {
-        // first free the buffers we may already own, otherwise we would leak them
         freeGPU();
 
-        if (other.VAO) {   // does "other" actually own buffers?
+        if (other.VAO) {
             vertices = std::move(other.vertices);
             indices = std::move(other.indices);
             VAO = other.VAO;
@@ -84,15 +70,12 @@ public:
         return *this;
     }
 
-    // Destructor: frees the GPU buffers (if we still own them).
     ~Mesh() noexcept {
         freeGPU();
     }
-    // LV - Aggiunto const alla funzione perchè Render::render prende const scene& 
-    // Draw the mesh: bind its VAO and ask OpenGL to draw the triangles from the indices.
-    // Marked "const": drawing does not change any C++-visible state of the Mesh (the VAO
-    // id itself is not modified), and the Renderer needs to call this on a "const Mesh&"
-    // because it receives the whole Scene as "const Scene&".
+
+    // Bind the VAO and draw all the indexed triangles. It is const because the renderer gets
+    // the Scene as const Scene&, and drawing does not change the Mesh.
     void draw() const {
         glBindVertexArray(VAO);
         glDrawElements(GL_TRIANGLES, this->indices.size(), GL_UNSIGNED_INT, 0);
@@ -102,51 +85,41 @@ public:
 private:
     GLuint VBO, EBO;
 
-    // Create the GPU buffers and tell OpenGL how the vertex data is laid out.
+    // Create the buffers, upload the data and describe the vertex layout.
     void setupMesh() {
-        // create the three buffers
         glGenVertexArrays(1, &VAO);
         glGenBuffers(1, &VBO);
         glGenBuffers(1, &EBO);
 
-        // from now on, we configure things "inside" this VAO
+        // from here on the buffer and attribute settings are stored in this VAO
         glBindVertexArray(VAO);
 
-        // upload the vertex data into the VBO
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
         glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), &vertices[0], GL_STATIC_DRAW);
 
-        // upload the indices into the EBO
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(GLuint), &indices[0], GL_STATIC_DRAW);
 
-        // Now we describe each vertex attribute. The number (0, 1, 2, ...) is the "location"
-        // we will use in the vertex shader with "layout (location = N)".
-        // For each attribute we say: location, how many floats, the type, the stride
-        // (= size of one whole Vertex), and the offset of that field inside the Vertex.
-
-        // location 0 = Position
-        glEnableVertexAttribArray(0);
+        // One attribute per field. The number is the location used in the vertex shader
+        // ("layout (location = N)"); then how many floats, the type, the stride (the size of a
+        // whole Vertex) and the offset of the field inside the Vertex.
+        glEnableVertexAttribArray(0);   // Position
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
-        // location 1 = Normal
-        glEnableVertexAttribArray(1);
+        glEnableVertexAttribArray(1);   // Normal
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
-        // location 2 = TexCoords
-        glEnableVertexAttribArray(2);
+        glEnableVertexAttribArray(2);   // TexCoords
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoords));
-        // location 3 = Tangent
-        glEnableVertexAttribArray(3);
+        glEnableVertexAttribArray(3);   // Tangent
         glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Tangent));
-        // location 4 = Bitangent
-        glEnableVertexAttribArray(4);
+        glEnableVertexAttribArray(4);   // Bitangent
         glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Bitangent));
 
-        // unbind, to avoid modifying this VAO by mistake later
+        // unbind, so later calls cannot change this VAO by mistake
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
     }
 
-    // Delete the GPU buffers, but only if we still own them (VAO != 0).
+    // delete the GPU buffers, only if we still own them
     void freeGPU() {
         if (VAO) {
             glDeleteVertexArrays(1, &VAO);
