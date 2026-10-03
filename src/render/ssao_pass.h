@@ -1,16 +1,17 @@
 #pragma once
 
-// SSAO (Screen-Space Ambient Occlusion) pass, pulled out of the Renderer.
+// SSAO (Screen-Space Ambient Occlusion) pass.
 //
 // It is a self-contained 3-pass pipeline: (1) a G-buffer of view-space position + normal, (2) the
 // raw (noisy) AO term sampled with a hemisphere kernel, (3) a blur to remove the per-pixel noise.
 // It OWNS all its GPU resources (the two G-buffer targets, the AO + blur targets, the noise
-// texture, the hemisphere kernel, its three shaders and its own full-screen quad), so the Renderer
-// no longer carries ~15 SSAO-only members. Same pattern as Framebuffer / StructuralInstancer.
+// texture, the hemisphere kernel, its three shaders and its own full-screen quad). Same pattern
+// as Framebuffer / StructuralInstancer.
 //
 // The Renderer owns one SsaoPass and, each frame, calls render() after the shadow passes and
 // before the color pass, then binds blurredAOTexture() in the color pass (ggx.frag samples it).
-// This is behaviour-identical to the old Renderer::renderSSAO() - only the code moved.
+// Note: the G-buffer pass culls like the color pass but does not skip the ceilings in the
+// spectator view.
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -24,7 +25,7 @@
 
 class SsaoPass {
 public:
-    // The three shading knobs ggx uses, kept in the renderer's ShadingTuning (so the HUD edits one
+    // The three knobs of ssao.frag, kept in the renderer's ShadingTuning (so the HUD edits one
     // place) and handed in each frame.
     struct Params {
         float radius;
@@ -32,8 +33,8 @@ public:
         float strength;
     };
 
-    // Shaders are constructed here (they need the GL context, which is live by the time the Renderer
-    // - and thus this member - is constructed). The GPU buffers/textures are created in init().
+    // Shaders are constructed here: they need the GL context, which exists when the Renderer (and
+    // so this member) is constructed. The GPU buffers and textures are created in init().
     SsaoPass()
         : gBufferShader("shaders/gbuffer.vert", "shaders/gbuffer.frag"),
           ssaoShader("shaders/fullscreen.vert", "shaders/ssao.frag"),
@@ -65,7 +66,7 @@ public:
         glBindVertexArray(0);
 
         // Hemisphere sample kernel: 32 vectors in tangent space, z >= 0, scattered more densely
-        // near the origin so nearby occluders matter more than distant ones. Fixed once here -
+        // near the origin so nearby occluders matter more than distant ones. Fixed once here:
         // only their orientation (via the noise texture, per pixel) changes at runtime.
         std::uniform_real_distribution<float> randZeroOne(0.0f, 1.0f);
         std::default_random_engine gen;
@@ -82,7 +83,7 @@ public:
 
         // 4x4 tile of random rotation vectors (z = 0: a rotation around the normal, not a full 3D
         // direction), tiled across the screen so every pixel's kernel is rotated a bit
-        // differently - turns banding into noise, which the blur pass then removes.
+        // differently: this turns banding into noise, which the blur pass then removes.
         glm::vec3 ssaoNoise[16];
         for (int i = 0; i < 16; ++i)
             ssaoNoise[i] = glm::vec3(randZeroOne(gen) * 2.0f - 1.0f, randZeroOne(gen) * 2.0f - 1.0f, 0.0f);
@@ -117,8 +118,8 @@ public:
         width_ = width;
         height_ = height;
 
-        // G-buffer: view-space position + normal, floating point (not colors - components are
-        // routinely outside [0,1] or negative).
+        // G-buffer: view-space position + normal, floating point (not colors: the components
+        // are often outside [0,1] or negative).
         glGenFramebuffers(1, &gBufferFBO);
         glBindFramebuffer(GL_FRAMEBUFFER, gBufferFBO);
 
@@ -249,9 +250,9 @@ public:
 private:
     int width_ = 0, height_ = 0;    // == the viewport size (SSAO textures are screen-sized)
 
-    Shader gBufferShader;   // shaders/gbuffer.vert/.frag - writes view-space pos/normal
-    Shader ssaoShader;      // shaders/fullscreen.vert + ssao.frag - the raw, noisy AO term
-    Shader ssaoBlurShader;  // shaders/fullscreen.vert + ssaoblur.frag - smooths it out
+    Shader gBufferShader;   // shaders/gbuffer.vert/.frag: writes view-space pos/normal
+    Shader ssaoShader;      // shaders/fullscreen.vert + ssao.frag: the raw, noisy AO term
+    Shader ssaoBlurShader;  // shaders/fullscreen.vert + ssaoblur.frag: smooths it out
 
     GLuint gBufferFBO = 0, gPositionTex = 0, gNormalTex = 0, gDepthRBO = 0;
     GLuint ssaoFBO = 0, ssaoColorTex = 0;

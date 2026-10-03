@@ -2,7 +2,7 @@
 //
 // Hemisphere-kernel screen-space ambient occlusion: for every pixel, scatter samples in a
 // small hemisphere oriented along its normal, re-project each one to screen space, and check
-// whether the G-buffer's actual surface there is closer to the camera than the sample - if
+// whether the G-buffer's actual surface there is closer to the camera than the sample: if
 // so something occludes that direction. Averaged over all samples this becomes a soft
 // "how enclosed is this point" factor. Runs in view space, so re-projection is just
 // `projection * viewSpacePos`.

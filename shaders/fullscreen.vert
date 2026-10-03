@@ -1,7 +1,7 @@
 // fullscreen.vert
 //
-// Shared by the SSAO passes: draws a full-screen quad in NDC so the fragment shader runs
-// once per pixel.
+// Shared by the SSAO passes and the fog pass: draws a full-screen quad in NDC, so the fragment
+// shader runs once per pixel.
 
 #version 410 core
 

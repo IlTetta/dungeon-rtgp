@@ -1,6 +1,6 @@
 // ssaoblur.frag
 //
-// ssao.frag's per-pixel random rotation leaves visible noise - a simple 4x4 box blur cleans
+// ssao.frag's per-pixel random rotation leaves visible noise; a simple 4x4 box blur cleans
 // it up into the soft, even darkening SSAO is supposed to look like.
 
 #version 410 core

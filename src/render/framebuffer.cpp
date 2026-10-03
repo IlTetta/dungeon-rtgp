@@ -18,7 +18,7 @@ void Framebuffer::create() {
     if (hasColor) {
         glGenTextures(1, &colorTex);
         glBindTexture(GL_TEXTURE_2D, colorTex);
-        // GL_RGBA8: 8 bits per channel, plenty for a normal color image (not HDR/fog yet)
+        // GL_RGBA8: 8 bits per channel, enough for a normal color image (no HDR)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -31,25 +31,21 @@ void Framebuffer::create() {
         glGenTextures(1, &depthTex);
         glBindTexture(GL_TEXTURE_2D, depthTex);
         // GL_DEPTH_COMPONENT: one float per texel, holding the depth value written by
-        // the depth test. This is exactly what a shadow map is: "how far is the closest
-        // thing the light can see, in each direction".
+        // the depth test (the fog pass reads it to rebuild the world position of each pixel).
         glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        // CLAMP_TO_BORDER + a white border is the usual shadow-mapping trick so that
-        // anything outside the light's view is treated as "not in shadow" (see the
-        // shadow-mapping milestone for where borderColor gets set to 1.0); we leave the
-        // wrap mode as CLAMP_TO_EDGE here since we are not doing that lookup yet, and
-        // revisit it when shadow mapping is actually implemented.
+        // CLAMP_TO_EDGE: the scene FBO is only read inside the screen. (The shadow maps use
+        // CLAMP_TO_BORDER with a white border instead, set up in ShadowMaps.)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthTex, 0);
     }
 
     if (!hasColor) {
-        // A framebuffer with only a depth attachment (our shadow-map case) has no color
-        // buffer to write to. Without these two calls some drivers consider the FBO
-        // incomplete, because by default OpenGL expects a color buffer to exist.
+        // A framebuffer with only a depth attachment has no color buffer to write to.
+        // Without these two calls some drivers consider the FBO incomplete, because by
+        // default OpenGL expects a color buffer to exist.
         glDrawBuffer(GL_NONE);
         glReadBuffer(GL_NONE);
     }

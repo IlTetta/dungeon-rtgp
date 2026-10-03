@@ -1,12 +1,9 @@
 // shadowmap.frag
 //
-// Fragment shader per la creazione della shadow map. Identico nella sostanza a
-// 20_shadowmap.frag (Davide Gadia, lecture07a): non fa nulla. La passata di shadow
-// scrive nel depth buffer dedicato del FBO l'informazione di profondita' di ogni
-// fragment dal punto di vista della luce; non calcola alcuna informazione di colore
-// (l'FBO che usiamo, vedi Renderer::initShadowMaps, non ha nemmeno un color attachment).
-//
-// N.B. va usato insieme a "shadowmap.vert" come vertex shader.
+// Fragment shader of the SPOT shadow map pass, like 20_shadowmap.frag (lecture07a): it does
+// nothing. The depth of each fragment, seen from the light, is written by the depth test into
+// the depth texture of the FBO; there is no color to compute (the FBO has no color attachment,
+// see ShadowMaps::init). Used together with shadowmap.vert.
 
 #version 410 core
 

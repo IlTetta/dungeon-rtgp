@@ -6,7 +6,7 @@
 #include <glfw/glfw3.h>   // glfwGetTime(), used for the torch flicker animation
 #include <algorithm>      // std::sort, for the nearest-to-camera shadow light selection
 #include <cmath>          // sin(), used for the torch flicker
-#include <random>         // SSAO kernel/noise generation (initSSAO)
+#include <random>         // not used here any more (the SSAO kernel moved to ssao_pass.h)
 #include <string>         // std::to_string, used to build "lightPositions[i]" uniform names
 #include <vector>
 
@@ -87,10 +87,10 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     int numSpotShadows = 0;
     int numPointShadows = 0;
 
-    // keep shadowWeight/lightWeight in sync with the scene - a dungeon regenerate can change how
+    // keep shadowWeight/lightWeight in sync with the scene: a dungeon regenerate can change how
     // many lights exist, in which case there's no "old" fade to continue and starting at 0 is
     // correct: gaining a slot is instant regardless, and a nonzero weight means "still fading,
-    // protect this slot" - a fresh light has nothing to protect.
+    // protect this slot", and a fresh light has nothing to protect.
     if (shadowWeight.size() != scene.lights.size())
         shadowWeight.assign(scene.lights.size(), 0.0f);
     if (lightWeight.size() != scene.lights.size())
@@ -99,12 +99,12 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     float now = (float)glfwGetTime();
     float dt = (lastFrameTime < 0.0f) ? 0.0f : (now - lastFrameTime);   // first frame: no fade yet
     // Clamp dt so a stall (e.g. several new casters lighting up in one frame) can't complete a
-    // whole fade in one huge step - keeps the fade spread over several frames even after a spike.
+    // whole fade in one huge step: this keeps the fade spread over several frames even after a spike.
     dt = std::min(dt, 1.0f / 15.0f);
     lastFrameTime = now;
 
     // Split the shadow-casting lights by type, each list ranked by squared distance to the eye.
-    // Distance only, NOT view direction - a light's position doesn't change when you turn your
+    // Distance only, NOT view direction: a light's position doesn't change when you turn your
     // head, so view-frustum ranking made lights reshuffle just from turning in place.
     std::vector<int> spotCandidates, pointCandidates;
     for (size_t i = 0; i < scene.lights.size() && tuning.shadowsEnabled; ++i) {
@@ -127,7 +127,7 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         };
     // Budget is the compile-time array size, but capped at RUNTIME by maxSpotShadows/maxPointShadows
     // (clamped to [0, compile-time max]). That runtime cap is what the benchmark's "scaling the number
-    // of shadow-casting lights" experiment sweeps - fewer casters => fewer depth passes => less cost.
+    // of shadow-casting lights" experiment sweeps: fewer casters => fewer depth passes => less cost.
     int spotBudget  = std::max(0, std::min(MAX_SPOT_SHADOWS,  maxSpotShadows));
     int pointBudget = std::max(0, std::min(MAX_POINT_SHADOWS, maxPointShadows));
     std::vector<int> chosenSpot  = pickCasters(spotCandidates,  spotBudget);
@@ -141,7 +141,7 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     for (int idx : chosenPoint)
         pointShadowLightIndex[numPointShadows++] = idx;
 
-    // Combined list, SPOTS first then POINTS: the shading selection below places shadow-casters
+    // Combined list, SPOTS first then POINTS: the shading selection below places shadow casters
     // first, and the per-light shadow uniforms map shading position i < numSpotShadows -> SPOT slot
     // i, otherwise -> POINT slot (i - numSpotShadows).
     int shadowLightIndex[MAX_SHADOW_LIGHTS];
@@ -149,7 +149,7 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     for (int j = 0; j < numSpotShadows;  ++j) shadowLightIndex[numShadowLights++] = spotShadowLightIndex[j];
     for (int k = 0; k < numPointShadows; ++k) shadowLightIndex[numShadowLights++] = pointShadowLightIndex[k];
 
-    // Fade only applies to LOSING a slot (gaining one is instant - the torch was already burning).
+    // Fade only applies to LOSING a slot (gaining one is instant: the torch was already burning).
     float fadeStep = (tuning.shadowFadeSeconds > 0.0f) ? (dt / tuning.shadowFadeSeconds) : 1.0f;
     auto updateFade = [&](const std::vector<int>& cands, const std::vector<int>& chosen) {
         for (int idx : cands) {
@@ -177,13 +177,13 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
 
     // SSAO's own 3-pass pipeline runs from the same camera the color pass is about to draw
     // from, before it (the color pass samples its result). Always runs, even with
-    // tuning.ssaoEnabled off, so the blurred texture is never stale - ssaoEnabled just gates
+    // tuning.ssaoEnabled off, so the blurred texture is never stale; ssaoEnabled just gates
     // whether ggx.frag actually multiplies by it.
     ssao.render(scene, projection, view, cullFrustum, cullingEnabled,
                 { tuning.ssaoRadius, tuning.ssaoBias, tuning.ssaoStrength });
 
-    // --- 1. clear the scene FBO (not the screen directly - the fog pass composites this
-    // onto the screen afterward, it needs the color AND depth back) ---
+    // --- 1. clear the scene FBO (not the screen directly: the fog pass composites this
+    // onto the screen afterward, and it needs the color AND the depth back) ---
     sceneFBO.bind();
     glClearColor(0.05f, 0.05f, 0.08f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -203,14 +203,13 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     shader.setFloat("pointNormalOffset", tuning.pointNormalOffset);
     shader.setFloat("pointPCFRadius", tuning.pointPCFRadius);
 
-    // Which lights actually get a uniform slot and shade the scene at all - up to MAX_LIGHTS,
-    // nearest to `eye` first (distance only - see the note above the shadow-caster sort on why
-    // view direction is deliberately NOT a factor here), not just the first ones in
-    // Scene::lights. A light that doesn't get a slot contributes nothing at all (unlike one
-    // that just has no shadow), which is what made corridors/far rooms go dark with more
-    // lights than MAX_LIGHTS. The shadow-casters chosen above are placed first in this list on
-    // purpose - a shadow-casting light that wasn't shaded would be pointless - everything else
-    // is filled with the nearest remaining lights.
+    // Which lights actually get a uniform slot and shade the scene at all: up to MAX_LIGHTS,
+    // nearest to `eye` first (distance only, see the note above the shadow-caster sort on why
+    // view direction is NOT a factor here), not just the first ones in Scene::lights. A light
+    // that does not get a slot contributes nothing at all (unlike one that just has no shadow).
+    // The shadow casters chosen above are placed first in this list on purpose (a shadow-casting
+    // light that is not shaded would be pointless); the rest is filled with the nearest
+    // remaining lights.
     std::vector<int> shadeCandidates;
     shadeCandidates.reserve(scene.lights.size());
     for (size_t i = 0; i < scene.lights.size(); ++i) shadeCandidates.push_back((int)i);
@@ -233,8 +232,10 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
 
     int lightBudget = MAX_LIGHTS - numShadowLights;
 
-    // "D": nearest-budget candidates, with the same margin-hysteresis trick as the shadow-
-    // caster selection, so a light near the cutoff doesn't flip in/out every frame.
+    // "D": the nearest `lightBudget` candidates, plus a hysteresis margin (lightHysteresisMargin):
+    // a light that is still fading can take the place of a fully faded one if it is within the
+    // margin of the cutoff distance, so a light near the cutoff does not flip in and out every
+    // frame. (The shadow-caster selection above has no hysteresis, only the fade.)
     std::vector<int> lightD(nonShadowCandidates.begin(),
         nonShadowCandidates.begin() + std::min((size_t)lightBudget, nonShadowCandidates.size()));
 
@@ -261,12 +262,11 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         }
     }
 
-    // Gotcha: a light dropped from "D" the instant it's no longer near enough would still pop,
+    // Gotcha: a light dropped from "D" the instant it is no longer near enough would still pop,
     // since a light only fades visibly while it HAS a uniform slot. So any light still mid-fade
-    // (lightWeight > 0) that isn't in D keeps its slot until the fade actually finishes. This
-    // relies on weight starting at 0 for a fresh light (see above) - anything that starts it
-    // nonzero for lights with no real slot to protect lets stillFading balloon and crowd out D
-    // entirely, which is exactly the bug that used to starve genuinely-nearby lights here.
+    // (lightWeight > 0) that is not in D keeps its slot until the fade actually finishes. This
+    // relies on the weight starting at 0 for a new light (see above): otherwise stillFading could
+    // grow and push the really nearby lights out of D.
     std::vector<int> stillFading;
     for (int idx : nonShadowCandidates) {
         if (lightWeight[idx] <= 0.0f) continue;
@@ -289,15 +289,15 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     for (int idx : chosenLights)
         shadeLightIndex[lightCount++] = idx;
 
-    // Demo aid: the "Direct lights" toggle forces the shaded light count to 0 so the surfaces (and
-    // the fog) get NO direct contribution - only the ambient*albedo*AO term survives. That isolates
-    // SSAO on camera (raise Ambient, then flip SSAO) and gives the "dark dungeon" shot. Does not
-    // touch the shadow passes (harmless waste while off) nor the light selection above.
+    // The "Direct lights" toggle (for the demo video) forces the shaded light count to 0, so the
+    // surfaces (and the fog) get NO direct light: only the ambient*albedo*AO term remains, which
+    // shows SSAO alone. It does not touch the shadow passes (wasted work while off) nor the light
+    // selection above.
     int shadedLightCount = directLightsEnabled ? lightCount : 0;
     metrics.activeLights = shadedLightCount;
 
-    // Same "instant on, faded off" shape as shadowWeight above - a torch already burning gets
-    // its shading slot back immediately, losing one still fades out over lightFadeSeconds.
+    // Same "instant on, faded off" rule as shadowWeight above: a torch already burning gets its
+    // shading slot back immediately, losing one fades out over lightFadeSeconds.
     float lightFadeStep = (tuning.lightFadeSeconds > 0.0f) ? (dt / tuning.lightFadeSeconds) : 1.0f;
     for (int idx : nonShadowCandidates) {
         bool active = std::find(chosenLights.begin(), chosenLights.end(), idx) != chosenLights.end();
@@ -308,23 +308,19 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     }
     // A forced shadow-caster is missing from nonShadowCandidates above, so without this its
     // lightWeight would go stale while its own brightness bypasses it (hasShadow -> lw = 1.0
-    // below) - only surfacing the moment it loses its shadow slot and lw suddenly reads
-    // whatever was frozen in there. Pin it to 1 the whole time so there's nothing stale left.
+    // below), and the moment it loses its shadow slot lw would read whatever old value was left
+    // there. Keeping it at 1 the whole time avoids that.
     for (int j = 0; j < numShadowLights; ++j)
         lightWeight[shadowLightIndex[j]] = 1.0f;
 
-    // Torches flicker over time instead of being static: a sum of two sines at different
-    // frequencies (less mechanical than one), phase-shifted per light so they don't pulse in
-    // sync. A pure function of elapsed time, so it stays repeatable for a benchmark run; only
-    // the intensity SENT to the shader is animated, scene.lights[i].intensity itself is never
-    // modified. Reuses `now` from the fade timer above.
+    // Torches flicker over time: a sum of two sines at different frequencies (less mechanical
+    // than one), with a phase per light so they do not pulse together. It only depends on the
+    // elapsed time, and only the intensity SENT to the shader changes (scene.lights[i].intensity
+    // is never modified). Reuses `now` from the fade timer above.
     //
-    // The phase is seeded from the light's own scene.lights index (shadeLightIndex[i]), not
-    // its slot position i: shadeLightIndex gets re-sorted by distance every frame, so two
-    // already fully-lit lights can swap slots just from a tiny change in relative distance -
-    // seeding by slot made that swap alone jump the flicker phase, an unfaded pop with nothing
-    // to do with the actual pop-in system. Seeding by the light's own index keeps the phase
-    // with the light regardless of which slot it lands in.
+    // The phase comes from the light's own scene.lights index (shadeLightIndex[i]), not from its
+    // slot i: the slots are re-sorted by distance every frame, so two lights can swap slots, and
+    // a phase tied to the slot would make the flicker jump.
     float t = now;
 
     // Also kept per-light (not just sent to the shader): the fog pass reuses these exact
@@ -337,10 +333,7 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
         const Light& light = scene.lights[shadeLightIndex[i]];
         std::string idx = "[" + std::to_string(i) + "]";
 
-        // Toned down after playtesting felt it too jumpy: half the amplitude and roughly half
-        // the frequency of the original pass, so the flame reads as a slow, gentle waver
-        // instead of a nervous flicker (and halves how big a jump ANY discontinuity here -
-        // e.g. a slot swap - could still produce, on top of it being rarer already).
+        // small and slow on purpose: a gentle waver, not a nervous flicker
         float seed = (float)shadeLightIndex[i] * 12.9898f;   // arbitrary per-light phase offset
         float flicker = 0.94f
                        + 0.05f * sin(t * 3.0f + seed)
@@ -391,7 +384,7 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     shader.setInt("albedoMap", ALBEDO_UNIT);
 
     // blurred SSAO term, one unit further along
-    const int SSAO_UNIT = ALBEDO_UNIT + 1;   // = 13
+    const int SSAO_UNIT = ALBEDO_UNIT + 1;   // = 11
     glActiveTexture(GL_TEXTURE0 + SSAO_UNIT);
     glBindTexture(GL_TEXTURE_2D, ssao.blurredAOTexture());
     shader.setInt("ssaoMap", SSAO_UNIT);
@@ -400,7 +393,7 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
 
     // --- 3. draw the scene, culled against cullFrustum ---
     // Structural slabs (floor/wall/ceiling) can go through the instancer: grouped by material into
-    // up to 3 instanced draw calls instead of one per slab. When it's off, they fall through to the
+    // up to 3 instanced draw calls instead of one per slab. When it is off, they fall through to the
     // per-object loop below like everything else. The per-object path stays for the props (varied
     // meshes) and is also the honest baseline of the instancing A/B.
     shader.setInt("useInstanceModel", 0);   // default: model comes from the uniform (per-object path)
@@ -444,8 +437,8 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
 
     // Fog reads back what the main pass just drew into sceneFBO, so it has to come after.
     // Hand it the exact list of lights (and their already-flickered, already-faded
-    // intensities) the color pass just used, instead of letting it pick its own - see the
-    // note on FogPass::render (render/fog_pass.h) for why a second, independent selection popped.
+    // intensities) the color pass just used, instead of letting it pick its own (see the
+    // note in render/fog_pass.h on why a second, independent selection would pop).
     std::vector<int> fogLightIndex(shadeLightIndex, shadeLightIndex + shadedLightCount);
     std::vector<float> fogLightIntensity(shadeIntensity, shadeIntensity + shadedLightCount);
     glm::mat4 invViewProj = glm::inverse(projection * view);

@@ -1,7 +1,7 @@
 // basic.frag
 //
-// Fragment shader for the basic forward rendering.
-// Every fragment of an object just gets painted with one flat color, sent from the CPU.
+// Minimal fragment shader, used only by DebugDraw: every fragment gets one flat color from the
+// CPU.
 
 #version 410 core
 

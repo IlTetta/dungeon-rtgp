@@ -1,13 +1,12 @@
 // basic.vert
-// Vertex shader for the basic forward rendering.
-// It only moves each vertex from object (model) space to clip space. (mesh data -> vertex
-// shader -> fragment shader -> pixels on screen).
+// Minimal vertex shader, now used only by DebugDraw (the frustum wireframe of the spectator
+// camera). It only moves each vertex from object space to clip space.
 
 #version 410 core
 
 // Attribute locations must match the ones we set up on the CPU side in Mesh::setupMesh()
 // (see src/engine/mesh.h): 0 = Position, 1 = Normal, 2 = TexCoords.
-// We only need aPos for now; the others are simply not read.
+// Only aPos is needed; the others are not read.
 layout (location = 0) in vec3 aPos;
 
 // One matrix per object (position/rotation/scale) and two shared by the whole frame

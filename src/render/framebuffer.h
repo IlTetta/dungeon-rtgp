@@ -1,34 +1,25 @@
 #pragma once
 
-// Framebuffer class — SCAFFOLDING for future milestones.
+// Framebuffer: an off-screen render target (FBO) with a color texture and/or a depth texture.
 //
-// So far we have only ever rendered directly to the screen (the "default framebuffer",
-// id 0, that GLFW gives us together with the window). To do shadow mapping we will need
-// to first render the scene from the LIGHT's point of view into an off-screen depth
-// texture (no color, just depth), and later, to sample that texture as a shadow map
-// while rendering the real (camera) view. Volumetric fog similarly benefits from
-// rendering into an off-screen color+depth target that a later pass can read from.
+// The Renderer uses one (sceneFBO) for the color pass: the scene is drawn INTO its textures
+// instead of onto the screen (the default framebuffer, id 0), so the fog pass can then read back
+// both the color and the depth, composite the fog onto the screen, and copy the depth there
+// (blitDepthToScreen). The shadow maps and the SSAO targets have their own FBOs, built in
+// ShadowMaps and SsaoPass.
 //
-// This class is the common piece both of those need: create a Frame Buffer Object
-// (FBO), attach to it a color texture and/or a depth texture, bind it (so following draw
-// calls render INTO its textures instead of onto the screen), and unbind it (go back to
-// rendering to the screen). It is not used anywhere yet — Renderer still renders
-// straight to the screen — but it is ready for the shadow-mapping milestone to build on.
-//
-// Like Mesh (engine/mesh.h), a Framebuffer owns GPU objects (the FBO itself, plus its
-// texture attachments), so it follows the same "move only" pattern: copying it would
-// leave two C++ objects owning the same GPU resources, which is not what we want.
+// Like Mesh (engine/mesh.h), a Framebuffer owns GPU objects (the FBO and its textures), so it is
+// "move only": copying it would leave two C++ objects owning the same GPU resources.
 
 #include <glad/glad.h>
 
 class Framebuffer {
 public:
     // Creates the FBO at the given size and attaches:
-    //   - a color texture, if "wantColor" is true (RGBA, 8 bits per channel — enough for
-    //     a normal color pass; a fog/HDR pass that needs more range can ask for a
-    //     floating-point format later, this constructor can grow a parameter for that)
-    //   - a depth texture, if "wantDepth" is true (this is what shadow mapping reads
-    //     from: the depth seen from the light)
+    //   - a color texture, if "wantColor" is true (RGBA, 8 bits per channel: enough for a
+    //     normal color pass)
+    //   - a depth texture, if "wantDepth" is true (the fog pass reads it to rebuild the world
+    //     position of each pixel)
     // At least one of the two must be true, or the FBO would have nothing to render into.
     Framebuffer(int width, int height, bool wantColor, bool wantDepth);
 
@@ -52,15 +43,12 @@ public:
     // class only knows its OWN width/height, not the window's.
     static void unbind(int screenWidth, int screenHeight);
 
-    // Recreates the color/depth textures at a new size (e.g. the window was resized, or
-    // the shadow map resolution setting changed). Whatever was rendered before is lost,
-    // same as with any other texture resize.
+    // Recreates the color/depth textures at a new size (Renderer::setViewport). Whatever was
+    // rendered before is lost.
     void resize(int width, int height);
 
-    // The GL texture ids of the attachments, so a later shader can bind them with
-    // glBindTexture(GL_TEXTURE_2D, ...) to sample them (e.g. the shadow-mapping shader
-    // sampling the depth texture, or a fog pass sampling the color texture).
-    // Returns 0 if that attachment was not requested in the constructor.
+    // The GL texture ids of the attachments, so a later shader can sample them (the fog pass
+    // reads both). Returns 0 if that attachment was not requested in the constructor.
     GLuint colorTexture() const { return colorTex; }
     GLuint depthTexture() const { return depthTex; }
 

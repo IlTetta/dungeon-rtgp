@@ -37,7 +37,7 @@ uniform float lightRadii[MAX_LIGHTS];
 // per-light shadow slot: -1 = no shadow (fully lit), otherwise which shadow map/cubemap and
 // whether it's a SPOT (2D) or POINT (cubemap) one.
 // Shadow casters are split by type: SPOT (torch) 2D maps and POINT (brazier) cubemaps have
-// separate budgets (must match MAX_SPOT_SHADOWS / MAX_POINT_SHADOWS in renderer.h). lightShadowSlot
+// separate budgets (must match ShadowMaps::MAX_SPOT / MAX_POINT in shadow_maps.h). lightShadowSlot
 // is the slot WITHIN the light's own type's array; lightShadowIsPoint says which array to read.
 #define MAX_SPOT_SHADOWS 8
 #define MAX_POINT_SHADOWS 2
@@ -168,10 +168,9 @@ void main() {
                 vec3 offsetFragPos = FragPos + N * pointNormalOffset;
                 vec3 fragToLight = offsetFragPos - lightPositions[i];
                 float currentDist = length(fragToLight);
-                // NOT scaled by lightRadii[i] (a brazier's reach, e.g. 20-30 world units) -
-                // that used to make the bias bigger than the props next to it, erasing their
-                // contact shadows into a bright "moat". Plain world-unit bias now, same idea
-                // as spotBiasMax/Min just above.
+                // Plain world-unit bias, NOT scaled by lightRadii[i]: a brazier reaches 20 world
+                // units, and a scaled bias was bigger than the props next to it, so their contact
+                // shadows disappeared.
                 float bias = max(pointBiasScale * (1.0 - NdotL), pointBiasMinScale);
                 float diskRadius = (1.0 + currentDist / max(lightRadii[i], 0.001)) * pointPCFRadius;
 

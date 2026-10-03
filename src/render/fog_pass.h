@@ -1,6 +1,6 @@
 #pragma once
 
-// Volumetric fog pass, pulled out of the Renderer.
+// Volumetric fog pass.
 //
 // A single full-screen ray march (shaders/fog.frag): it reads back the scene color + depth that the
 // main color pass drew into an off-screen FBO, and composites an atmospheric haze on top, straight
@@ -8,9 +8,9 @@
 //
 // The Renderer calls render() after the color pass, handing it the SAME lights the color pass just
 // used (same indices, same already-flickered-and-faded intensities), so the fog picks its
-// MAX_FOG_LIGHTS-nearest subset of THAT list instead of re-sorting scene.lights on its own - a torch
-// entering/leaving the fog's set can then only happen through the already-anti-popped weights, never
-// as an unfaded pop of its own. Behaviour-identical to the old inline Renderer::renderFog().
+// MAX_FOG_LIGHTS-nearest subset of THAT list instead of re-sorting scene.lights on its own: a torch
+// entering or leaving the fog's set then only changes through the already faded weights, it never
+// pops on its own.
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -92,11 +92,11 @@ public:
         fogShader.setInt("fogSteps", steps);
         metrics.fogSteps = steps;
 
-        // Fog only marches with a handful of lights, not the full shaded set - narrow
+        // Fog only marches with a handful of lights, not the full shaded set: narrow
         // shadeLightIndex down to its MAX_FOG_LIGHTS nearest members. This sorts WITHIN an
-        // already-stable list rather than re-picking from scene.lights, so which lights make the
-        // cut only changes when the main pass's own set changes (already anti-popped) - nothing
-        // here can pop on its own anymore.
+        // already stable list rather than re-picking from scene.lights, so which lights make the
+        // cut only changes when the main pass's own set changes (already faded): nothing here can
+        // pop on its own.
         std::vector<int> order(shadeLightIndex.size());
         for (size_t i = 0; i < order.size(); ++i) order[i] = (int)i;
         std::sort(order.begin(), order.end(), [&](int a, int b) {
@@ -124,9 +124,8 @@ public:
         glEnable(GL_DEPTH_TEST);
 
         // The fog composited COLOR onto the screen, but the scene DEPTH is still only in sceneFBO. Copy
-        // it onto the default framebuffer so anything drawn to the screen after render() returns - the
-        // fire particles, the debug frustum wireframe - depth-tests against the real scene again (before
-        // the fog pass existed, render() left the scene depth on the screen and they relied on that).
+        // it onto the default framebuffer, so what is drawn to the screen after render() returns (the
+        // fire particles, the debug frustum wireframe) depth-tests against the real scene.
         sceneFBO.blitDepthToScreen(viewportWidth, viewportHeight);
     }
 

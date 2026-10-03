@@ -1,36 +1,34 @@
 #pragma once
 
 // Renderer class.
-// A "basic forward renderer" with GGX (Cook-Torrance) shading. Its job, once per frame,
-// is to:
-//   1. render the depth maps of the shadow-casting torches into off-screen FBOs
-//   2. clear the screen (color + depth buffer)
-//   3. activate our shader program and tell it about the camera, the lights and the
-//      shadow maps: these do not change between one object and the next, so we set them
-//      only once
-//   4. loop over every RenderObject in the Scene and, for each one, tell the shader where
-//      it is (the "model" matrix) and which material to draw it with (its albedo texture +
-//      uvScale / roughness / F0, see core/scene.h), then ask its Mesh to draw itself
-//   5. fill in the "Renderer" fields of FrameMetrics (drawCalls, trianglesDrawn), so the
-//      HUD (Andrea's side) can show and log them
+// A forward renderer with GGX (Cook-Torrance) shading. Once per frame (renderInternal) it:
+//   1. picks the shadow-casting lights (nearest ones, separate budgets for SPOT and POINT) and
+//      renders their depth maps (ShadowMaps)
+//   2. runs the SSAO pipeline (SsaoPass)
+//   3. clears the off-screen scene FBO and sets the per-frame uniforms: camera, the selected
+//      lights (with flicker and fade), the shadow maps, SSAO
+//   4. draws the structural slabs (instanced, if enabled) and then every other visible object,
+//      each with its model matrix and material, culling against the frustum
+//   5. runs the fog pass (FogPass), which composites the scene onto the screen
+//   6. fills the Renderer fields of FrameMetrics, which the HUD and the benchmark read
 //
 // "Forward" means we compute the contribution of every light against an object directly
 // in the fragment shader, in the same pass that draws that object (as opposed to
 // "deferred" rendering, which splits this into two passes). It is the simplest approach
-// and is enough for the number of point lights (torches) we expect on screen at once.
+// and is enough for the number of lights (torches and braziers) we shade at once.
 //
 // Shading model: shaders/ggx.frag implements the Cook-Torrance "FDG" BRDF (Fresnel x
 // microfacet Distribution x Geometry term) with the GGX/Trowbridge-Reitz distribution,
 // Schlick's Fresnel approximation and Smith's (Schlick-GGX) geometry term, plus a Lambert
 // diffuse term, with a textured albedo per material.
 //
-// Shadows: SPOT lights (wall torches) use a 2D depth map + PCF, close to a classic single-
-// light shadow-mapping setup (perspective instead of orthographic, since these are point
-// lights rather than directional). POINT lights (braziers) use a cubemap of world-space
-// distances instead, since a single cone can't cover an omnidirectional light.
+// Shadows: SPOT lights (wall torches) use a 2D depth map + PCF, close to the classic
+// shadow-mapping setup of the lab (perspective instead of orthographic, since a torch is a local
+// light, not a directional one). POINT lights (braziers) use a cubemap of world-space distances
+// instead, since a single cone cannot cover an omnidirectional light.
 //
-// Volumetric fog (M3): after the color pass, a full-screen ray march (shaders/fog.frag)
-// reads back its color+depth and composites an atmospheric haze on top - see FogPass (render/fog_pass.h).
+// Volumetric fog: after the color pass, a full-screen ray march (shaders/fog.frag) reads back its
+// color+depth and composites an atmospheric haze on top, see FogPass (render/fog_pass.h).
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -61,19 +59,19 @@ public:
     // draw count is a constant 3 regardless of culling). Flip it for the instancing A/B.
     bool structuralInstancing = false;
 
-    // Demo aid (not a perf option): when false, the color pass shades with 0 direct lights, so only
-    // the ambient*albedo*AO term remains. Lets the video isolate SSAO (raise Ambient, toggle SSAO)
-    // and show the dungeon unlit. Default true = normal lighting.
+    // For the demo video (not a performance option): when false, the color pass shades with 0
+    // direct lights, so only the ambient*albedo*AO term remains and SSAO can be shown alone.
+    // Default true = normal lighting.
     bool directLightsEnabled = true;
 
-    // Live-tunable shading/shadow constants, sent to ggx.frag as uniforms every frame (see
-    // renderInternal()). main.cpp exposes them in an ImGui panel to dial them in without
-    // recompiling; defaults below are what looked right during testing.
+    // Live-tunable shading/shadow constants, sent to the shaders as uniforms every frame (see
+    // renderInternal()). The HUD (hud/hud.h) exposes them, to dial them in without recompiling;
+    // the defaults below are what looked right during testing.
     struct ShadingTuning {
         // Master real-time-shadow switch, same idea as ssaoEnabled/fogEnabled below: forces
         // numShadowLights to 0 for the frame (renderInternal never populates shadowCandidates
         // when this is off), so every light renders fully lit/unshadowed. Mainly a diagnostic
-        // A/B toggle - e.g. to tell a shadow-bias artifact apart from an SSAO one by watching
+        // A/B toggle, e.g. to tell a shadow-bias artifact apart from an SSAO one by watching
         // whether a given visual survives with shadows fully out of the picture.
         bool  shadowsEnabled = true;
 
@@ -81,9 +79,9 @@ public:
         float spotBiasMax       = 0.05f;   // SPOT shadow depth bias at grazing angles
         float spotBiasMin       = 0.005f;  // SPOT shadow depth bias at normal incidence
         float spotNormalOffset  = 0.03f;   // SPOT: push along N before the light-space projection
-        // Plain world-unit distance bias, same idea as spotBiasMax/Min above - NOT scaled by
-        // the light's radius (see ggx.frag: that used to make the bias for a brazier bigger
-        // than the props next to it, erasing their contact shadows into a bright halo).
+        // Plain world-unit distance bias, same idea as spotBiasMax/Min above, NOT scaled by
+        // the light's radius (see ggx.frag: a scaled bias was bigger than the props next to a
+        // brazier and erased their contact shadows).
         float pointBiasScale    = 0.05f;   // POINT shadow distance bias at grazing angles
         float pointBiasMinScale = 0.02f;   // POINT shadow distance bias at normal incidence
         float pointNormalOffset = 0.06f;   // POINT: push along N before the distance test
@@ -100,45 +98,44 @@ public:
         float lightFadeSeconds      = 0.5f;
 
         // SSAO ("contact shadow" near where props/walls meet the floor, independent of any
-        // light) - see shaders/ssao.frag. ssaoEnabled is mostly there for quick A/B testing.
+        // light), see shaders/ssao.frag. ssaoEnabled is mostly there for quick A/B testing.
         bool  ssaoEnabled = true;
         float ssaoRadius   = 0.3f;    // view-space units: how far the sample hemisphere reaches
         float ssaoBias     = 0.035f;  // fights the SSAO equivalent of shadow acne
         float ssaoStrength = 1.2f;    // contrast of the final AO term
 
-        // Volumetric fog (M3): ray marched from the camera to whatever the main pass drew,
+        // Volumetric fog: ray marched from the camera to whatever the main pass drew,
         // see shaders/fog.frag. fogSteps also lands in FrameMetrics::fogSteps for the
         // "fog steps vs fps" benchmark experiment.
         bool  fogEnabled     = true;
         glm::vec3 fogColor   = glm::vec3(0.5f, 0.55f, 0.6f);   // cool, slightly blue mist
         // exp(-density*rayLength), so this alone decides how much haze builds up over a
-        // typical room-sized ray - too high buries the shadow/SSAO contrast in a uniform
+        // typical room-sized ray: too high buries the shadow/SSAO contrast in a uniform
         // "milky" look, too low makes the fog invisible in a small room. 0.02 reads as a
         // light haze at normal room distances.
         float fogDensity     = 0.02f;    // higher = thicker fog, opaque sooner
         // How much nearby torches light up the fog. In a big room, or with several torches
         // close together, the ray passes near enough lights for long enough that this adds up
-        // fast - kept low so it reads as a local glow, not a wash over the whole room.
+        // fast: kept low so it reads as a local glow, not a wash over the whole room.
         float fogScatter     = 0.1f;    // how strongly nearby torches light up the fog
         float fogMaxDistance = 40.0f;    // world units: march no farther than this
         // Ray march sample count: quality/cost knob, and the one the "fog steps vs fps"
         // benchmark experiment dials up/down. 12 is the default because 24 measured a real
-        // FPS drop (60-100 -> 25-36) with MAX_FOG_LIGHTS lights sampled at every step - the
-        // slider still goes up to 64 for the experiment itself.
+        // FPS drop (from 60-100 to 25-36) with MAX_FOG_LIGHTS lights sampled at every step;
+        // the slider still goes up to 64 for the experiment itself.
         int   fogSteps       = 12;
     } tuning;
 
-    // Must be >= the number of lights we ever pass to the shader in one draw call, and must
-    // match "#define MAX_LIGHTS 32" in shaders/ggx.frag. If Scene::lights ever grows past
-    // this (more torches than we can shade at once), render() below simply ignores the
-    // extra ones; proper light culling (picking only the closest lights per object) is a
-    // job for a later milestone, not for basic forward rendering.
+    // How many lights the color pass can shade at once; must match "#define MAX_LIGHTS 32" in
+    // shaders/ggx.frag. When the scene has more lights, renderInternal() picks the MAX_LIGHTS
+    // nearest to the camera each frame (with a fade, so a light leaving the set does not pop).
+    // The selection is per frame, not per object.
     static const int MAX_LIGHTS = 32;
 
     // Shadow budgets, split by TYPE (a room has many more torches than braziers, and a SPOT map is
     // 1 pass vs a POINT cubemap's 6 faces). The nearest MAX_SPOT_SHADOWS / MAX_POINT_SHADOWS lights
     // to the camera cast a shadow each frame; one that drops out fades (shadowFadeSeconds) instead
-    // of popping; a light that never makes the cut falls back to unshadowed - never a crash.
+    // of popping; a light that never makes the cut is just unshadowed.
     //
     // The map RESOURCES + resolutions now live in ShadowMaps (render/shadow_maps.h). These are the
     // public ALIASES of its budgets, kept here because renderInternal (texture-unit layout), the HUD
@@ -150,7 +147,7 @@ public:
     static const int MAX_SHADOW_LIGHTS = MAX_SPOT_SHADOWS + MAX_POINT_SHADOWS;   // total casters
 
     // RUNTIME caps on how many lights actually cast a shadow this frame, clamped to the compile-time
-    // budgets above. This is the "scaling the number of dynamic lights" knob (proposal S6): the
+    // budgets above. This is the "scaling the number of dynamic lights" knob of the proposal: the
     // benchmark sweeps it, and frame time responds through the number of shadow depth passes (the
     // dominant per-light cost). Default = full budget. Editable from the HUD "Shadow tuning" panel.
     int maxSpotShadows  = MAX_SPOT_SHADOWS;
@@ -158,7 +155,7 @@ public:
 
     // Loads and compiles the given vertex/fragment shader pair (paths relative to the
     // working directory; see the shaders copy step in CMakeLists.txt). main.cpp passes
-    // "shaders/ggx.vert" / "shaders/ggx.frag" by default.
+    // "shaders/ggx.vert" / "shaders/ggx.frag".
     Renderer(const char* vertexPath, const char* fragmentPath);
 
     // Call this once at startup, and again every time the window is resized: it updates the
@@ -168,7 +165,7 @@ public:
 
     // Call this right after rebuilding the Scene from scratch (dungeon "Regenerate"/"Random
     // seed"/etc.). shadowWeight/lightWeight only auto-reset when scene.lights.size() actually
-    // changes, which a same-size regenerate would NOT trigger - leaving old per-light fade
+    // changes, which a same-size regenerate would NOT trigger, leaving old per-light fade
     // state misapplied to a completely different set of lights (one could start already fully
     // lit, another already faded out, until they drift back over the next fade duration).
     // Clearing both here makes every light start its fade from a clean 0, same as a fresh
@@ -176,10 +173,10 @@ public:
     void resetLightFades();
 
     // Draws one whole frame from "camera" (the first-person player camera). Culls against
-    // that same camera's frustum. Also writes drawCalls / trianglesDrawn into "metrics".
+    // that same camera's frustum. Also writes the Renderer counters into "metrics".
     void render(const Scene& scene, Camera& camera, FrameMetrics& metrics);
 
-    // DEBUG / M3 tooling (Andrea): draw the scene from an arbitrary "spectator" viewpoint
+    // Debug tool (Andrea): draw the scene from an arbitrary "spectator" viewpoint
     // (explicit view matrix + eye position) while culling against a DIFFERENT, frozen frustum
     // (normally the player's). This is what lets a second, far camera SHOW the frustum culling
     // in action: geometry outside the player frustum disappears even though we look from above.
@@ -194,7 +191,7 @@ public:
     // view-projection for the frozen frustum and for the debug frustum wireframe.
     const glm::mat4& getProjection() const { return projection; }
 
-    // Frees the GPU shader programs and the shadow-map FBOs/textures. Call once, at shutdown.
+    // Frees the GPU resources of the renderer and of its passes. Call once, at shutdown.
     void clean();
 
 private:
@@ -222,16 +219,16 @@ private:
     int viewportHeight;
 
     // Per-scene-light fade weight (0 = no shadow effect, 1 = full), indexed the same way as
-    // Scene::lights - persists ACROSS frames so a light's shadow can fade out instead of
+    // Scene::lights. It persists ACROSS frames so a light's shadow can fade out instead of
     // popping when it loses its slot (gaining one is instant, see renderInternal). Reset to
-    // all-0 whenever its size no longer matches scene.lights.size() - a nonzero weight means
-    // "still fading, protect this slot", which a brand new light has no business claiming.
+    // all-0 whenever its size no longer matches scene.lights.size(): a new light has nothing
+    // to fade.
     std::vector<float> shadowWeight;
 
     // Same idea for the SHADING selection (which lights get a uniform slot / contribute light
     // at all): indexed like scene.lights, persists across frames. A light not forced in as a
-    // shadow-caster snaps to 1 the instant it holds a shading slot, ramps toward 0 once it
-    // doesn't - and keeps its slot until this reaches 0 (see the "gotcha" note in
+    // shadow caster snaps to 1 the instant it holds a shading slot, ramps toward 0 once it
+    // does not, and keeps its slot until this reaches 0 (see the "gotcha" note in
     // renderInternal), so a torch fades out instead of vanishing when the player walks into a
     // torch-dense area.
     std::vector<float> lightWeight;
@@ -243,17 +240,17 @@ private:
 
     // --- shadow mapping ---
     // The shadow-map resources (SPOT 2D maps + POINT distance cubemaps) and the two depth passes
-    // live in their own class now (render/shadow_maps.h). renderInternal still does the nearest-N
-    // caster SELECTION (it owns the fade state), then per slot calls shadows.computeSpotMatrix(),
+    // live in their own class (render/shadow_maps.h). renderInternal does the nearest-N caster
+    // SELECTION (it owns the fade state), then per slot calls shadows.computeSpotMatrix(),
     // shadows.renderSpotPass() / shadows.renderPointPass(), and binds shadows.spotTexture(slot) /
-    // shadows.pointTexture(slot) in the color pass. Behaviour-identical to the old inline passes.
+    // shadows.pointTexture(slot) in the color pass.
     ShadowMaps shadows;
 
     // --- SSAO ---
     // The whole screen-space ambient-occlusion pipeline (G-buffer -> raw AO -> blur) lives in its
-    // own class now (render/ssao_pass.h) and owns all its GPU resources. renderInternal() calls
+    // own class (render/ssao_pass.h) and owns all its GPU resources. renderInternal() calls
     // ssao.render(...) before the color pass, then binds ssao.blurredAOTexture() into it; setViewport
-    // forwards the resize. Behaviour-identical to the old inline renderSSAO().
+    // forwards the resize.
     SsaoPass ssao;
 
     // --- fog ---
@@ -264,7 +261,7 @@ private:
     Framebuffer sceneFBO;
     FogPass fog;
 
-    // NB: the renderer no longer owns any texture. Each object carries a materialIndex into
+    // NB: the renderer does not own any texture. Each object carries a materialIndex into
     // Scene::materials, and we just bind that material's albedo texture. Loading the textures
     // is done on the scene-building side (src/world/), so the renderer only READS the scene.
 };

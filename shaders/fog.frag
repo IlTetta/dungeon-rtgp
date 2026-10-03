@@ -3,11 +3,11 @@
 // Volumetric fog, ray marched: for each screen pixel, reconstruct the world-space point the
 // main color pass drew there (from its depth buffer), then walk from the camera to that point
 // in fixed steps, accumulating fog density and how much nearby torches light up each bit of
-// fog along the way. Composited over the already-rendered scene color, so this is the last
-// pass before the HUD.
+// fog along the way. Composited over the already-rendered scene color; after it only the
+// particles, the debug wireframe and the HUD are drawn.
 //
 // Kept deliberately simple: no shadow-map sampling inside the march (would give "god rays"
-// but costs a lot more) - just density plus attenuated light color, integrated along the
+// but costs a lot more): just density plus attenuated light color, integrated along the
 // real ray per pixel rather than a flat screen tint.
 
 #version 410 core

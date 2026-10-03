@@ -1,23 +1,19 @@
 // shadowmap.vert
 //
-// Vertex shader per la passata di depth-only che genera una shadow map.
-// Ricalca 19_shadowmap.vert (Davide Gadia, lecture07a): l'unica cosa che serve e'
-// trasformare ogni vertice nello spazio della luce (lightSpaceMatrix = proiezione *
-// vista della luce), esattamente come per una camera normale ma "seduti" sulla torcia.
+// Vertex shader of the depth-only pass that builds a SPOT shadow map. Based on
+// 19_shadowmap.vert (lecture07a): it only moves each vertex into light space
+// (lightSpaceMatrix = projection * view of the light), like a normal camera placed on the torch.
 //
-// Differenza rispetto all'originale: il prof usa una proiezione ORTOGRAFICA (va bene per
-// una luce direzionale, i cui raggi sono paralleli). Noi la costruiamo lato CPU con
-// glm::perspective invece di glm::ortho (Renderer::renderShadowPass, in renderer.cpp),
-// perche' una torcia e' una point light e i suoi raggi divergono da un punto - ma questo
-// shader non lo sa nemmeno: gli arriva gia' una lightSpaceMatrix pronta, qualunque sia il
-// tipo di proiezione con cui e' stata costruita.
+// Difference from the lab version: there the projection is ORTHOGRAPHIC, right for a directional
+// light with parallel rays. A torch is a local light whose rays spread from a point, so on the
+// CPU we build a PERSPECTIVE projection (ShadowMaps::computeSpotMatrix). The shader does not care:
+// it just gets the finished lightSpaceMatrix.
 
 #version 410 core
 
 layout (location = 0) in vec3 aPos;
-// Le altre location (Normal, TexCoords, Tangent, Bitangent) non servono per una depth-only
-// pass: non calcoliamo colore, quindi non le dichiariamo nemmeno (esattamente come fa il
-// prof in 19_shadowmap.vert).
+// the other attributes (normal, uv, ...) are not needed in a depth-only pass, so they are not
+// declared (like in the lab version)
 
 uniform mat4 model;
 uniform mat4 lightSpaceMatrix;
