@@ -1,25 +1,24 @@
 // particle.frag
-// Fragment shader for the spark/ember particles. Draws a soft ROUND dot on the quad (no texture:
-// the shape is computed from the quad corner), and outputs it for ADDITIVE blending so overlapping
-// sparks build up a warm glow.
+// Fragment shader of the fire particles. It turns the square quad into a soft round dot
+// computed from the corner position (no texture needed), for additive blending.
 
 #version 410 core
 
-in vec2  vCorner;   // quad corner in [-0.5, 0.5]
-in vec3  vColor;
+in vec2 vCorner;   // quad corner in [-0.5, 0.5]
+in vec3 vColor;
 in float vAlpha;
 
 out vec4 FragColor;
 
 void main() {
-    // distance from the quad center: 0 at the center, 1 at the edge midpoints. This turns the
-    // square quad into a soft circle.
+    // distance from the quad center: 0 at the center, 1 at the middle of the edges
     float r = length(vCorner) * 2.0;
-    float falloff = 1.0 - smoothstep(0.0, 1.0, r);   // 1 in the middle, fading to 0 at the rim
+    float falloff = 1.0 - smoothstep(0.0, 1.0, r);   // 1 at the center, 0 at the border
     float a = vAlpha * falloff;
-    if (a < 0.01) discard;                            // skip the fully transparent rim
+    if (a < 0.01)
+        discard;   // the transparent corners would add nothing
 
-    // Additive blend (SRC_ALPHA, ONE) is set on the CPU side, so it adds vColor * a to the frame:
-    // we output the plain color and let the alpha drive how much it adds.
+    // The blending (SRC_ALPHA, ONE) is set on the CPU: the result is frame + vColor * a, so
+    // overlapping particles add up into a brighter glow.
     FragColor = vec4(vColor, a);
 }
