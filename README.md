@@ -1,4 +1,4 @@
-# Procedural Dungeon Walkthrough - RTGP
+# Procedural Dungeon Walkthrough (RTGP)
 
 Real-Time Graphics Programming project (a.a. 2025/2026).
 Interactive first-person walkthrough of a procedurally generated dungeon, lit by torches and
