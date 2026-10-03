@@ -1,107 +1,137 @@
-# SETUP — come far partire il progetto
+# SETUP: come compilare ed eseguire il progetto
 
-Guida per mettere in piedi e compilare `dungeon-rtgp` su Windows.
+Guida per compilare `dungeon-rtgp` su Windows.
 
-Le librerie (GLFW, GLAD, GLM) sono **già dentro il repo** (`external/` + `libs/win/`), quindi
-NON devi scaricare né configurare niente a mano: basta clonare e compilare.
+Le librerie (GLFW, GLAD, GLM, Dear ImGui, stb_image) e gli asset sono **già nel repo**
+(`external/`, `libs/win/`, `assets/`): basta clonare e compilare, senza scaricare nulla.
 
 ---
 
 ## 1. Prerequisiti
 
 - **Visual Studio 2022** con il workload **"Sviluppo di applicazioni desktop con C++"**.
-  Per installarlo: apri **Visual Studio Installer** → su "Visual Studio Community 2022" →
-  **Modifica** → spunta **"Sviluppo di applicazioni desktop con C++"** → Installa.
-  (Questo dà il toolset **v143**, lo stesso con cui sono compilate le librerie del lab.)
+  Per installarlo: **Visual Studio Installer** → "Visual Studio Community 2022" → **Modifica** →
+  spunta **"Sviluppo di applicazioni desktop con C++"** → Installa.
+  (Dà il toolset **v143**, lo stesso con cui è compilata la `glfw3.lib` del laboratorio.)
 - **Git**.
-- CMake è incluso in Visual Studio, non serve installarlo a parte.
+- CMake è incluso in Visual Studio.
+- Una GPU con **OpenGL 4.1**.
 
 ---
 
-## 2. Clona il repo e mettiti sul tuo branch
+## 2. Clona il repo
 
 ```bash
 git clone <URL-del-repo> dungeon-rtgp
 cd dungeon-rtgp
-git switch feat/lorenzo
 ```
 
-(Se il branch `feat/lorenzo` non compare, fai prima `git fetch` e poi lo `switch`.)
+Il branch `main` contiene il progetto completo.
 
 ---
 
 ## 3. Compila ed esegui
 
-### Opzione A — dentro Visual Studio 2022 (consigliata)
+### Opzione A: dentro Visual Studio 2022 (consigliata)
 
-1. Apri **Visual Studio 2022** → **File → Apri → Cartella…** → scegli la cartella `dungeon-rtgp`.
-2. VS legge il `CMakeLists.txt` e **configura da solo** (guarda il pannello "CMake" per l'esito).
-3. Nella barra in alto, verifica che la configurazione sia **x64-Debug** e che l'elemento di
-   avvio sia **`dungeon.exe`**.
-4. Premi **Ctrl+F5** (esegui senza debug).
+1. **File → Apri → Cartella…** → scegli la cartella `dungeon-rtgp`.
+2. VS legge il `CMakeLists.txt` e configura da solo (esito nel pannello "CMake").
+3. Nella barra in alto scegli la configurazione e come elemento di avvio **`dungeon.exe`**:
+   - **x64-Debug** per sviluppare;
+   - **x64-Release** (RelWithDebInfo) per **misurare**: il Debug di MSVC è molto più lento e i
+     numeri non sono rappresentativi.
 
-> Nota: aprendo una cartella CMake, l'Esplora soluzioni mostra la "CMake Targets View" (vedi
-> solo il target `dungeon`, non i file). Per vedere i file **Visualizza** -> **Esplora soluzioni**.
+   Le due configurazioni sono definite in `CMakeSettings.json`.
+4. **Ctrl+F5** (esegui senza debug).
 
-### Opzione B — da terminale
+> Aprendo una cartella CMake, l'Esplora soluzioni mostra la "CMake Targets View". Per vedere i
+> file: **Visualizza** → **Esplora soluzioni**.
+
+### Opzione B: da terminale
 
 ```bash
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Debug
 ```
 
-L'eseguibile finisce in `build/Debug/dungeon.exe`.
+```bash
+cmake --build build --config Release
+```
+
+L'eseguibile finisce in `build/Release/dungeon.exe` (o `build/Debug/` con `--config Debug`).
 
 ### Risultato atteso
 
-Una **finestra grigio-scuro** dal titolo "Dungeon RTGP". Si chiude con **ESC**.
-Se la vedi, la toolchain e le librerie funzionano.
+Si apre la finestra "Dungeon RTGP" in prima persona dentro il dungeon del seed 12345, con le
+finestre dell'HUD. **F1** libera il cursore per usare l'HUD, **ESC** chiude.
+
+### Il programma di test `bsp_test`
+
+Un secondo eseguibile da console che genera il dungeon e lo stampa in ASCII, senza finestra:
+`bsp_test.exe` (opzionale: `bsp_test.exe <seed>`). In Visual Studio sceglilo come elemento di avvio.
 
 ---
 
-## 4. Dipendenze e asset (già nel repo)
+## 4. Dipendenze e asset
 
-È tutto già committato: cloni e compili, non devi procurarti nulla.
-- **Dear ImGui** (HUD prestazioni) → sorgenti in `external/imgui/`, compilati col progetto.
-- **stb_image** (caricamento texture) → header in `external/stb/`.
-- **Modelli e texture** dei prop in `assets/props/`, texture delle superfici in `assets/textures/`
-  (vengono copiate accanto all'eseguibile a ogni build, come `shaders/`).
-- **Assimp**: NON usato — i modelli `.obj` li carica un nostro loader (niente libreria da 500 MB).
-- **Bullet**: NON usato — collisioni ad-hoc e catene con fisica **Verlet** scritta da noi.
-
----
-
-## 5. La tua parte (Lorenzo)
-
-Tu lavori in `src/render/` (la classe `Renderer`) e in `shaders/` (il GLSL). Non toccare le
-cartelle `src/world/`, `src/hud/`, `src/dungeon/`.
-
-I file **condivisi** che usi ma NON modifichi (se non insieme, a inizio milestone) sono in
-`src/core/`:
-- `scene.h` → la scena da disegnare (la riempio io, tu la LEGGI, sempre per `const&`).
-- `metrics.h` → i contatori dell'HUD; tu scrivi solo `drawCalls` e `trianglesDrawn`.
-- `material.h` → l'id del materiale (FLOOR/WALL/PROP), che ti dice come renderizzare ogni oggetto.
-
-Le utility comuni sono in `src/engine/` (`shader.h`, `mesh.h`, `camera.h`): sono già pronte,
-riscritte da me (non copiate dal lab). Per M1 ti servono soprattutto `shader.h` e `mesh.h`.
-Per gli shader puoi partire dal GGX del lab (`lecture05`).
+- **GLFW, GLAD, GLM** → `external/` + `libs/win/glfw3.lib`.
+- **Dear ImGui** (HUD) → sorgenti in `external/imgui/`, compilati insieme al progetto.
+- **stb_image** (caricamento texture) → `external/stb/`.
+- **Prop** (`.obj` + texture) in `assets/props/`, texture delle superfici in `assets/textures/`.
+  Dopo ogni build `shaders/` e `assets/` vengono **copiate accanto all'eseguibile**, perché il
+  programma li carica con percorsi relativi.
+- **Assimp**: non usato, i modelli li carica il nostro loader OBJ (`src/engine/obj_loader.h`).
+- **Bullet**: non usato, collisioni e catene (Verlet) sono scritte da noi.
 
 ---
 
-## 6. Flusso git (promemoria)
+## 5. Struttura del codice
 
-- Lavora sempre su **`feat/lorenzo`**, con commit frequenti.
-- A **inizio milestone**: `git switch feat/lorenzo` poi `git merge main` (per allinearti).
-- A **fine milestone**: si merga su `main` insieme e si tagga (`M1`, `M2`, ...).
-- I file condivisi (`src/core/`, `src/engine/`, `main.cpp`, `CMakeLists.txt`) si toccano solo
-  insieme, a inizio milestone → così i merge restano puliti.
+| Cartella | Contenuto | Chi |
+|---|---|---|
+| `src/core/` | strutture condivise: `Scene`, `Material`, `FrameMetrics` | entrambi |
+| `src/engine/` | `Shader`, `Mesh`, `Camera`, loader OBJ, texture | entrambi |
+| `src/dungeon/` | generatore BSP + `bsp_test` | Andrea |
+| `src/world/` | geometria 3D, prop, catene, collisioni, culling, particelle, debug draw | Andrea |
+| `src/bench/` | percorso camera, benchmark, esperimenti | Andrea |
+| `src/hud/`, `src/input/` | HUD ImGui, input | Andrea |
+| `src/render/` | renderer, ombre, SSAO, fog, instancing strutturale | Lorenzo (instancer: Andrea) |
+| `shaders/` | GLSL | Lorenzo (particelle: Andrea) |
+| `src/main.cpp` | finestra e loop | entrambi |
+
+La scena la costruisce il codice di `world/` e il renderer la legge soltanto (`const Scene&`).
 
 ---
 
-## 7. Se qualcosa non va
+## 6. Misurare (benchmark)
+
+1. Build **x64-Release**, e nella finestra **Benchmark** togli la spunta a **VSync**.
+2. **Load** il percorso di riferimento (`benchmarks/bench_path_seed12345.txt`, copialo accanto
+   all'eseguibile, nella cartella `benchmarks/` della build) oppure registrane uno con **Record**.
+3. Lancia uno degli sweep ("Run experiments", "Run fog sweep", ...). Ogni configurazione scrive un
+   CSV in `benchmarks/` accanto all'eseguibile; rilanciando lo stesso sweep i file diventano
+   `_run2`, `_run3`, ... invece di sovrascriversi.
+4. Analisi con `analysis/analyze_benchmarks.m` (MATLAB, senza toolbox).
+
+---
+
+## 7. Flusso git
+
+- `main`: progetto completo, sempre compilabile; i tag `M2`, `M3` segnano le milestone.
+- `feat/andrea`, `feat/lorenzo`: i branch di lavoro di ciascuno.
+- I file condivisi (`src/core/`, `src/engine/`, `main.cpp`, `CMakeLists.txt`) si modificano
+  d'accordo, così i merge restano puliti.
+
+---
+
+## 8. Se qualcosa non va
 
 - **CMake: "could not find any instance of Visual Studio"** → manca il workload C++.
-- **Errori di link su GLFW / `LNK2019`** → stai compilando a 32 bit o con MinGW; deve essere
-  **MSVC x64** (le librerie sono vc143 x64).
-- **`LNK4098` runtime mismatch** → è già gestito nel `CMakeLists.txt` (usiamo il runtime
-  statico `/MT` per combaciare con la `glfw3.lib` del lab). Non cambiarlo.
+- **Errori di link su GLFW / `LNK2019`** → stai compilando a 32 bit o con MinGW: serve
+  **MSVC x64** (la libreria è vc143 x64).
+- **`LNK4098` runtime mismatch** → già gestito nel `CMakeLists.txt` (runtime statico `/MT`, come
+  la `glfw3.lib` del lab). Non cambiarlo.
+- **Hai modificato solo un `.h` e il programma non cambia** → con il percorso della cartella che
+  contiene caratteri non ASCII (`à`, `°`) Ninja non legge le dipendenze degli header, quindi non
+  ricompila i `.cpp` che li includono. Usa **Compila → Ricompila tutto** (o tocca un `.cpp`).
+- **Schermo nero o "shader file not read"** → l'eseguibile non trova `shaders/`: lancialo dalla
+  sua cartella (la build copia lì shader e asset).
