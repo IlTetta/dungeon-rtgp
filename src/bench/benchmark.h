@@ -6,7 +6,6 @@
 //
 // It is a small state machine: IDLE, RECORDING or REPLAYING. main only calls beginFrame() at the
 // top of the loop and endFrame() after rendering; the HUD Benchmark panel drives the rest.
-// It only reads the metrics, it never changes the renderer.
 
 #include <string>
 #include <fstream>
@@ -79,7 +78,7 @@ public:
     #else
         const char* build = "Debug";
     #endif
-        // metadata line starting with '#', so MATLAB / pandas can skip it as a comment
+        // metadata line starting with '#', so MATLAB can skip it as a comment
         csv_ << "# seed=" << seed
              << " culling=" << (cullingOn ? "ON" : "OFF")
              << " shadow_budget=" << shadowBudget
@@ -110,7 +109,7 @@ public:
 
         // We do NOT advance the clock on the first replay frame: its dt still contains the
         // hitch of loading / regenerating the dungeon, and it would make us jump far into the
-        // path. So frame 0 stays at t = 0 and is not logged (see endFrame).
+        // path. So frame 0 stays at t = 0 and is not logged.
         if (replayFrame_ > 0)
             replayTimeMs_ += dt * 1000.0f;
 
@@ -158,7 +157,7 @@ public:
     }
 
 private:
-    // Create the folder of the file (e.g. "benchmarks/") if it is missing, otherwise the ofstream
+    // Create the folder of the file if it is missing, otherwise the ofstream
     // cannot open the file. With the error_code version a failure does not throw: the open()
     // after it simply fails and we return false.
     static void ensureParentDir(const std::string& filename) {
@@ -173,7 +172,7 @@ private:
         csv_ << replayFrame_ << ","
              << replayTimeMs_ << ","
              << (dt * 1000.0f) << ","   // frame_ms: the real time of this frame, used in the analysis
-             << m.fps << ","            // fps_smoothed: ImGui's averaged fps, only for reference
+             << m.fps << ","    // fps_smoothed: ImGui's averaged fps, only for reference
              << m.drawCalls << ","
              << m.objectsTotal << ","
              << m.objectsCulled << ","
@@ -201,10 +200,10 @@ private:
     int replayFrame_ = 0;
 };
 
-// If `basePath` (e.g. "benchmarks/benchmark_seed12345_cullON.csv") does not exist, return it as
+// If `basePath` does not exist, return it as
 // it is. If it exists, return the first free "..._run2.csv", "..._run3.csv", ... instead.
 // So running the same configuration again keeps the old CSV, and we can repeat each config a few
-// times to estimate the measurement noise (the path is fixed, the noise comes from the system).
+// times to estimate the measurement noise.
 inline std::string nextFreeCsvPath(const std::string& basePath) {
     std::error_code ec;
     if (!std::filesystem::exists(basePath, ec))
@@ -213,7 +212,7 @@ inline std::string nextFreeCsvPath(const std::string& basePath) {
     // add "_runN" before the ".csv" extension
     std::filesystem::path p(basePath);
     std::filesystem::path dir = p.parent_path();
-    std::string stem = p.stem().string();       // file name without extension
+    std::string stem = p.stem().string();   // file name without extension
     std::string ext = p.extension().string();   // ".csv"
     for (int run = 2; run < 1000; ++run) {
         std::filesystem::path candidate = dir / (stem + "_run" + std::to_string(run) + ext);

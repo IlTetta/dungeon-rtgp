@@ -18,11 +18,11 @@
 
 // One configuration to measure.
 struct ExperimentConfig {
-    std::string name;            // used in the CSV file name
-    bool culling;                // frustum culling on/off
-    bool ssao;                   // SSAO on/off
-    bool structuralInstanced;    // floor/wall/ceiling drawn instanced (3 calls) or one call per slab
-    bool instanced;              // particles instanced (1 call) or one call per particle
+    std::string name;   // used in the CSV file name
+    bool culling;   // frustum culling on/off
+    bool ssao;  // SSAO on/off
+    bool structuralInstanced;   // floor/wall/ceiling drawn instanced (3 calls) or one call per slab
+    bool instanced;   // particles instanced (1 call) or one call per particle
     int particleCount;
     // Shadow caster budget for this run (the "number of lights" sweep). 99 means "full budget":
     // the renderer clamps it to the compile-time maximum, so the other sweeps run with all
@@ -30,7 +30,7 @@ struct ExperimentConfig {
     int maxSpotShadows = 99;
     int maxPointShadows = 99;
     // Fog ray-march steps for this run (the "fog quality vs FPS" sweep). -1 means "leave the
-    // user's current value", so only the fog sweep changes it.
+    // current value", so only the fog sweep changes it.
     int fogSteps = -1;
 };
 

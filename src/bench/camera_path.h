@@ -7,7 +7,7 @@
 // trajectory for every configuration.
 //
 // A camera pose is fully described by 5 numbers: the position (x, y, z) and the two angles Yaw
-// and Pitch (see engine/camera.h). A path is a list of these poses, each with the time in ms
+// and Pitch. A path is a list of these poses, each with the time in ms
 // since the start of the recording.
 //
 // The path is indexed by TIME, not by frame: on replay we advance a clock and sample the path at
@@ -24,10 +24,10 @@
 
 // One recorded camera pose.
 struct CameraKeyframe {
-    float tMs;       // ms since the recording started
-    glm::vec3 pos;   // camera position
-    float yaw;       // degrees, same convention as Camera
-    float pitch;     // degrees
+    float tMs;  // ms since the recording started
+    glm::vec3 pos;  // camera position
+    float yaw;  // degrees, same convention as Camera
+    float pitch;  // degrees
 };
 
 class CameraPath {
@@ -74,10 +74,6 @@ public:
         }
 
         // Find the segment [a, b] that contains tMs and interpolate linearly inside it.
-        // A linear scan is enough: a path has a couple of thousand keyframes and we sample it
-        // once per frame.
-        // Lerping the yaw is safe because the camera never wraps it to [0, 360): it just keeps
-        // growing, so two consecutive keyframes are always close.
         for (size_t i = 0; i + 1 < keyframes.size(); ++i) {
             const CameraKeyframe& a = keyframes[i];
             const CameraKeyframe& b = keyframes[i + 1];
@@ -97,7 +93,6 @@ public:
     //   # comment lines start with '#'
     //   seed <n>
     //   <tMs> <px> <py> <pz> <yaw> <pitch>     (one line per keyframe)
-    // Plain text so it is easy to read and to commit as a reference path.
     // Returns false if the file cannot be opened.
     bool save(const std::string& filename) const {
         std::ofstream out(filename);
