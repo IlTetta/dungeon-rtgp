@@ -1,62 +1,63 @@
 #pragma once
 
-// ExperimentRunner: plays the loaded benchmark path once per configuration, unattended, writing
-// one CSV per run. This automates the core experiment of the project (frustum culling ON vs OFF,
-// optionally crossed with SSAO on/off): press one button and it runs every config back to back, so
-// the numbers all come from the EXACT same camera path with only the tested knob changing between
-// runs. That is what makes the runs comparable.
+// ExperimentRunner: replays the loaded path once per configuration, one run after the other
+// without any click, and writes one CSV per run. All the numbers then come from exactly the same
+// camera path, and only the tested setting changes between two runs.
 //
-// It reuses the BenchmarkHarness for the actual replay + logging: for each config it calls
-// beginReplay() (with that config's name in the CSV file), waits for the harness to finish the
-// path, then moves on to the next config. The knobs themselves (culling, SSAO) live in main / the
-// renderer, so main reads currentConfig() each frame and applies them - the runner stays decoupled
-// from how the app is actually drawn.
+// The HUD buttons fill `configs` for each experiment: culling ON/OFF (optionally crossed with
+// SSAO), particle instancing, structural instancing, number of shadow lights, fog steps.
+//
+// The runner does the replay through the BenchmarkHarness: for each config it calls
+// beginReplay() with a CSV named after the config, waits for the path to end, then goes on.
+// It does not apply the settings itself: main reads currentConfig() every frame and sets culling,
+// SSAO, ... on the app, so the runner does not need to know how the scene is drawn.
 
 #include <string>
 #include <vector>
 #include "bench/benchmark.h"
 
-// One configuration to measure. Add more runtime knobs here as they become available (e.g. a
-// shadow-light budget, once that is a runtime value instead of a compile-time constant).
+// One configuration to measure.
 struct ExperimentConfig {
-    std::string name;            // goes into the CSV file name, and tells the configs apart
-    bool culling;                // frustum culling ON/OFF for this run
-    bool ssao;                   // SSAO ON/OFF for this run
-    bool structuralInstanced;    // structural geometry (floor/wall/ceiling) drawn instanced vs per-object
-    bool instanced;              // particles drawn instanced (1 call) vs naive (1 call per particle)
-    int  particleCount;          // number of particles for this run
-    // Runtime shadow-caster budget for this run (the "scaling #lights" sweep). Default 99 is a
-    // sentinel meaning "full budget": the renderer clamps it to the compile-time max, so the sweeps
-    // that do NOT test this knob (culling / particles / instancing) just run with all shadows on.
-    int  maxSpotShadows  = 99;
-    int  maxPointShadows = 99;
-    // Fog ray-march step count for this run (the "fog quality vs FPS" sweep). Default -1 is a
-    // sentinel meaning "leave the fog steps at the user's current value", so the sweeps that do NOT
-    // test this knob keep fog untouched; only the fog sweep sets a real (positive) step count.
-    int  fogSteps        = -1;
+    std::string name;            // used in the CSV file name
+    bool culling;                // frustum culling on/off
+    bool ssao;                   // SSAO on/off
+    bool structuralInstanced;    // floor/wall/ceiling drawn instanced (3 calls) or one call per slab
+    bool instanced;              // particles instanced (1 call) or one call per particle
+    int particleCount;
+    // Shadow caster budget for this run (the "number of lights" sweep). 99 means "full budget":
+    // the renderer clamps it to the compile-time maximum, so the other sweeps run with all
+    // shadows on.
+    int maxSpotShadows = 99;
+    int maxPointShadows = 99;
+    // Fog ray-march steps for this run (the "fog quality vs FPS" sweep). -1 means "leave the
+    // user's current value", so only the fog sweep changes it.
+    int fogSteps = -1;
 };
 
 class ExperimentRunner {
 public:
-    std::vector<ExperimentConfig> configs;   // the batch to run, filled by main before start()
+    std::vector<ExperimentConfig> configs;   // the batch, filled by the HUD before start()
 
-    bool running() const { 
+    bool running() const {
         return running_;
     }
-    int  currentIndex() const { 
-        return index_; 
+
+    int currentIndex() const {
+        return index_;
     }
-    int  count() const { 
-        return (int)configs.size(); 
+
+    int count() const {
+        return (int)configs.size();
     }
+
     const ExperimentConfig& currentConfig() const {
         return configs[index_];
     }
 
-    // Begin the batch. seed / shadowBudget go into every CSV header; seed also names the files.
-    // Does nothing (running() stays false) if there is no config or no path loaded.
+    // Start the batch. seed and shadowBudget go into every CSV header, and the seed also into the
+    // file names. Does nothing if there are no configs or no path is loaded.
     void start(const BenchmarkHarness& bench, unsigned int seed, int shadowBudget) {
-        if (configs.empty() || bench.path().empty()) 
+        if (configs.empty() || bench.path().empty())
             return;
         seed_ = seed;
         shadowBudget_ = shadowBudget;
@@ -65,37 +66,36 @@ public:
         running_ = true;
     }
 
-    // Stop the batch early (aborts the current run's CSV, which stays as far as it got).
+    // Stop the batch early. The CSV of the current run keeps the rows written so far.
     void stop(BenchmarkHarness& bench) {
         if (running_) {
             bench.stopReplay();
-            running_ = false; 
+            running_ = false;
         }
     }
 
-    // Call once per frame at the TOP of the loop, before bench.beginFrame(). Starts the current
-    // config's replay, and when a replay finishes advances to the next config until none are left.
+    // Called once per frame at the top of the loop, before bench.beginFrame(). It starts the
+    // replay of the current config and, when that replay is over, moves to the next config.
     void update(BenchmarkHarness& bench) {
         if (!running_)
             return;
 
-        // while a run is playing there is nothing to do: the harness logs each frame, and
-        // bench.beginFrame() ends the replay by itself when the path is over.
-        if (bench.mode() == BenchmarkHarness::REPLAYING) 
+        // a run is playing: nothing to do, the harness logs every frame and stops by itself at
+        // the end of the path
+        if (bench.mode() == BenchmarkHarness::REPLAYING)
             return;
 
-        // no run is playing: the previous config just finished (started_), or we are at the start
+        // no run playing: either the previous config just finished (started_) or we just began
         if (started_) {
-            index_++;          // move on to the next config
+            index_++;
             started_ = false;
         }
-        if (index_ >= (int)configs.size()) {   // all configs done -> batch finished
-            running_ = false;
+        if (index_ >= (int)configs.size()) {
+            running_ = false;   // all configs done
             return;
         }
-        // launch the run for configs[index_]. nextFreeCsvPath keeps a repeated batch from
-        // overwriting the previous one's CSVs (it appends _run2/_run3/... instead), so we can run
-        // the same sweep a few times and estimate the measurement noise.
+        // start the run of configs[index_]. nextFreeCsvPath adds _run2, _run3, ... if the file
+        // already exists, so running the same sweep again does not overwrite the old CSVs.
         std::string csv = "benchmarks/benchmark_seed" + std::to_string(seed_)
                         + "_" + configs[index_].name + ".csv";
         csv = nextFreeCsvPath(csv);
@@ -105,8 +105,8 @@ public:
 
 private:
     bool running_ = false;
-    bool started_ = false;   // has the current index's run been launched yet?
-    int  index_ = 0;
+    bool started_ = false;   // has the run of the current index been started?
+    int index_ = 0;
     unsigned int seed_ = 0;
-    int  shadowBudget_ = 0;
+    int shadowBudget_ = 0;
 };
