@@ -12,9 +12,9 @@
 
 #version 410 core
 
-layout (location = 0) in vec2 aCorner;      // per vertex: quad corner in [-0.5, 0.5]
-layout (location = 1) in vec3 aCenter;      // per instance: world position
-layout (location = 2) in vec3 aColor;       // per instance: color
+layout (location = 0) in vec2 aCorner;  // per vertex: quad corner in [-0.5, 0.5]
+layout (location = 1) in vec3 aCenter;  // per instance: world position
+layout (location = 2) in vec3 aColor;   // per instance: color
 layout (location = 3) in vec2 aSizeAlpha;   // per instance: x = size (world units), y = alpha
 
 uniform mat4 view;
@@ -37,7 +37,7 @@ void main() {
 
     // Billboard in VIEW space: we move the center to view space and then add the corner offset on
     // the view X and Y axes. In view space the camera looks down -Z, so the X/Y plane always faces
-    // it: the quad faces the camera for any view, without passing right/up vectors.
+    // it: the quad faces the camera for any view.
     vec4 centerView = view * vec4(center, 1.0);
     centerView.xy += aCorner * sa.x;   // sa.x = size
     gl_Position = projection * centerView;

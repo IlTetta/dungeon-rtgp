@@ -1,6 +1,6 @@
 // particle.frag
 // Fragment shader of the fire particles. It turns the square quad into a soft round dot
-// computed from the corner position (no texture needed), for additive blending.
+// computed from the corner position, for additive blending.
 
 #version 410 core
 

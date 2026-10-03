@@ -6,12 +6,6 @@
 // materials. The normal color pass makes one draw call per slab (hundreds). Here we group the
 // visible slabs by material and make ONE glDrawElementsInstanced per material (3 calls at most),
 // passing each slab's model matrix as a per-instance vertex attribute.
-// Same cube, same shader, same pixels: only the number of draw calls changes, while the
-// triangles stay the same. This removes draw call / CPU submission overhead, not GPU work.
-//
-// It is OFF by default (Renderer::structuralInstancing): the per-object path is the baseline,
-// and with instancing on the structural draw calls would stay at 3 whatever the culling does,
-// hiding the effect of culling in that experiment.
 //
 // It keeps its own copy of the unit cube, built once, so it does not depend on the Scene, which
 // is rebuilt at every "Generate". Only the instance matrices are uploaded every frame.
@@ -23,7 +17,7 @@
 
 #include "core/scene.h"
 #include "core/metrics.h"
-#include "engine/mesh.h"             // Vertex layout (same locations 0..4 as ggx.vert)
+#include "engine/mesh.h"
 #include "engine/shader.h"
 #include "world/frustum_culling.h"
 
@@ -38,7 +32,7 @@ public:
     // Build the cube VAO/VBO/EBO and the instance VBO. Needs the OpenGL context, so the Renderer
     // calls it once from its constructor.
     void init() {
-        // The same unit cube as makeCubeMesh() in dungeon_geometry.h (24 vertices, flat normals).
+        // The same unit cube as makeCubeMesh() in dungeon_geometry.h.
         // We build our own instead of using scene.meshes[0] because we need a VAO where we can add
         // the instance attributes, and it must outlive the Scene.
         std::vector<Vertex> vertices;
@@ -136,13 +130,11 @@ public:
     }
 
     // Draw all the visible structural slabs, grouped by material. `shader` is already active with
-    // all the per-frame uniforms (lights, shadows, SSAO) set by the renderer. We switch ggx.vert
-    // to the instance matrix (useInstanceModel = 1) and back to the uniform at the end, for the
-    // props. Same culling and same counters as the per-object path.
+    // all the per-frame uniforms (lights, shadows, SSAO) set by the renderer.
     void drawStructural(Shader& shader, const Scene& scene, const Frustum& cullFrustum,
                         bool cullingEnabled, bool hideCeiling, int albedoUnit, FrameMetrics& metrics) {
         // one list of matrices per material: 0 = floor, 1 = wall, 2 = ceiling. The structural
-        // objects always have materialIndex 0, 1 or 2 (see buildScene), so we use it as index.
+        // objects always have materialIndex 0, 1 or 2, so we use it as index.
         for (int b = 0; b < 3; ++b)
             buckets[b].clear();
         for (const RenderObject& obj : scene.objects) {
