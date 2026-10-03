@@ -48,7 +48,7 @@
 const unsigned int WIDTH = 1280;
 const unsigned int HEIGHT = 720;
 
-// radius of the player sphere used for wall collisions
+// radius of the player cylinder (a circle in X/Z) used by the collisions and to push the chains
 const float PLAYER_RADIUS = 0.4f;
 
 // The FPS input state (keyboard/mouse callbacks + applyMovements) now lives in input/input.h; the

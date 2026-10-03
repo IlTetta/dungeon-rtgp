@@ -1,11 +1,7 @@
-// Small standalone test program for the dungeon generator and its 3D layout.
-// It builds a dungeon, prints it as ASCII, and then prints some statistics about the 3D layout
-// (how many floor/wall boxes and lights it produces, and the overall size of the level).
-// No OpenGL here: we only test the pure logic (grid + box/light placement) before rendering.
-//
-// Built as a SEPARATE executable (target "bsp_test"), so we can run it without the 3D window.
+// bsp_test: a small console program to check the dungeon generator without the 3D window.
+// It prints the dungeon as ASCII and a few numbers about its 3D layout.
 
-#include <cstdlib>   // std::strtoul, to read an optional seed from the command line
+#include <cstdlib>
 
 #include "dungeon/dungeon_generator.h"
 #include "world/dungeon_geometry.h"
@@ -13,8 +9,7 @@
 int main(int argc, char** argv) {
     int width = 60;
     int height = 30;
-    // Default to the reference seed, but allow "bsp_test <seed>" so we can preview any dungeon's
-    // ASCII map (useful for picking the extra benchmark seeds) without recompiling.
+    // reference seed by default; "bsp_test <seed>" previews any other dungeon without recompiling
     unsigned int seed = 12345;
     if (argc > 1)
         seed = (unsigned int)std::strtoul(argv[1], nullptr, 10);
@@ -25,23 +20,26 @@ int main(int argc, char** argv) {
     std::cout << "Dungeon " << width << "x" << height << " (seed " << seed << ")\n\n";
     printDungeon(dungeon);
 
-    // --- 3D layout statistics ---
+    // 3D layout statistics
     DungeonLayout layout = buildDungeonLayout(dungeon);
 
+    // NB: everything that is not a floor ends up in wallCount, so it also counts the ceilings
     int floorCount = 0;
     int wallCount = 0;
     for (const BoxPlacement& box : layout.boxes) {
-        if (box.material == MAT_FLOOR) floorCount++;
-        else wallCount++;
+        if (box.material == MAT_FLOOR)
+            floorCount++;
+        else
+            wallCount++;
     }
 
     std::cout << "\n--- 3D layout ---\n";
-    std::cout << "rooms        : " << dungeon.rooms.size() << "\n";
-    std::cout << "floor boxes  : " << floorCount << "\n";
-    std::cout << "wall boxes   : " << wallCount << "\n";
-    std::cout << "total boxes  : " << layout.boxes.size() << "  (each = 1 RenderObject = 1 draw call)\n";
-    std::cout << "lights       : " << layout.lights.size() << "\n";
-    std::cout << "triangles    : ~" << layout.boxes.size() * 12 << "  (12 per cube)\n";
+    std::cout << "rooms : " << dungeon.rooms.size() << "\n";
+    std::cout << "floor boxes : " << floorCount << "\n";
+    std::cout << "wall boxes : " << wallCount << "\n";
+    std::cout << "total boxes : " << layout.boxes.size() << "  (each = 1 RenderObject = 1 draw call)\n";
+    std::cout << "lights : " << layout.lights.size() << "\n";
+    std::cout << "triangles : ~" << layout.boxes.size() * 12 << "  (12 per cube)\n";
 
     return 0;
 }

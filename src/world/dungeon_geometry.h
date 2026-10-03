@@ -1,50 +1,46 @@
 #pragma once
 
-// Turns a 2D dungeon grid (WALL / FLOOR tiles) into 3D geometry for the Scene.
+// Turns the 2D dungeon grid (WALL / FLOOR tiles) into 3D geometry for the Scene.
 //
-// The work is split in two parts on purpose:
-//   1. buildDungeonLayout(): PURE math (glm only, no OpenGL). It decides WHERE every box and
-//      light goes. We can test it in the console (print counts / positions) without a window.
-//   2. makeCubeMesh() + buildScene(): the OpenGL part. It creates one cube mesh on the GPU and
-//      wraps every box into a RenderObject. It needs an active OpenGL context, so it runs only
-//      after the window is created.
+// Two separate steps:
+//   1. buildDungeonLayout(): it decides where every box goes,
+//      so we can test it in the console (bsp_test) without opening a window.
+//   2. makeCubeMesh() + buildScene(): the OpenGL part. One cube mesh on the GPU, and one
+//      RenderObject per box that reuses it. Needs an OpenGL context.
 //
-// Coordinate mapping: the grid is on the X/Z plane, Y is up.
-//   grid tile (gx, gy)  ->  world center x = gx*tileSize + tileSize/2 , z = gy*tileSize + ...
-//   floors sit with their top surface at y = 0; walls stand on top of them.
+// Coordinates: the grid lies on the X/Z plane and Y is up.
+//   tile (gx, gy) -> world center x = gx*tileSize + tileSize/2, z = gy*tileSize + tileSize/2
+//   the floor top is at y = 0, walls go from y = 0 to wallHeight, the ceiling sits on top.
 
 #include <vector>
 #include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>   // glm::translate, glm::scale
+#include <glm/gtc/matrix_transform.hpp>
 
-#include "core/scene.h"                    // Scene, RenderObject, AABB, Light, MaterialId
-#include "engine/texture.h"                // loadTexture()
-#include "dungeon/dungeon_generator.h"     // Dungeon, Tile, Rect
+#include "core/scene.h"
+#include "engine/texture.h"
+#include "dungeon/dungeon_generator.h"
 
-// Tunable sizes for the 3D dungeon (in world units).
+// Sizes of the 3D dungeon, in world units.
 struct DungeonParams {
-    float tileSize = 2.0f;         // size of one grid cell in world units
-    float wallHeight = 4.5f;       // how tall the walls are (taller = roomier, fits statue-on-altar)
-    float floorThickness = 0.2f;   // how thick the floor slabs are
+    float tileSize = 2.0f;  // size of one grid cell
+    float wallHeight = 4.5f;    // tall enough for the statue on the altar
+    float floorThickness = 0.2f;    // thickness of the floor and ceiling slabs
 };
 
-// One axis-aligned box to place in the world (a floor slab or a wall block).
+// One axis-aligned box to place in the world: a floor slab, a wall block or a ceiling slab.
 struct BoxPlacement {
-    glm::vec3 center;      // center of the box in world space
-    glm::vec3 size;        // full size along x, y, z
-    MaterialId material;   // FLOOR or WALL
-    AABB bounds;           // = center +/- size/2 (precomputed, used for culling later)
+    glm::vec3 center;   // center of the box in world space
+    glm::vec3 size;   // full size along x, y, z
+    MaterialId material;    // MAT_FLOOR, MAT_WALL or MAT_CEILING
+    AABB bounds;    // center +- size/2, computed once (used by culling and collisions)
 };
 
-// The result of the pure layout step: all the boxes and all the lights.
+// Result of the layout step. `lights` stays empty: every light comes from a fire prop
+// (torch or brazier) and is added in props.h, so no light is left without a visible source.
 struct DungeonLayout {
     std::vector<BoxPlacement> boxes;
     std::vector<Light> lights;
 };
-
-// ---------------------------------------------------------------------------------------------
-// PART 1 - pure layout (no OpenGL)
-// ---------------------------------------------------------------------------------------------
 
 // Build a BoxPlacement from a center and a size, computing its AABB.
 inline BoxPlacement makeBox(glm::vec3 center, glm::vec3 size, MaterialId material) {
@@ -58,29 +54,31 @@ inline BoxPlacement makeBox(glm::vec3 center, glm::vec3 size, MaterialId materia
     return box;
 }
 
-// A wall tile is "visible" (worth drawing) only if at least one of its 8 neighbors is FLOOR.
-// Interior walls completely surrounded by other walls are never seen, so we skip them: this
-// removes a huge number of useless objects (and useless draw calls later).
+// A wall tile is worth drawing only if at least one of its 8 neighbors is FLOOR. Walls fully
+// surrounded by other walls can never be seen, so skipping them saves a lot of objects (and
+// draw calls) before the renderer even starts.
 inline bool isWallVisible(const Dungeon& d, int x, int y) {
     for (int dy = -1; dy <= 1; dy++) {
         for (int dx = -1; dx <= 1; dx++) {
-            if (dx == 0 && dy == 0) continue;
+            if (dx == 0 && dy == 0)
+                continue;
             int nx = x + dx;
             int ny = y + dy;
-            // skip neighbors outside the map
-            if (nx < 0 || ny < 0 || nx >= d.width || ny >= d.height) continue;
-            if (d.get(nx, ny) == FLOOR) return true;
+            if (nx < 0 || ny < 0 || nx >= d.width || ny >= d.height)
+                continue;   // outside the map
+            if (d.get(nx, ny) == FLOOR)
+                return true;
         }
     }
     return false;
 }
 
-// Compute all the boxes (floors + visible walls) and the lights (one per room).
+// Compute all the boxes: a floor slab and a ceiling slab for every FLOOR tile, and a wall block
+// for every visible WALL tile.
 inline DungeonLayout buildDungeonLayout(const Dungeon& d, const DungeonParams& p = DungeonParams()) {
     DungeonLayout layout;
     float t = p.tileSize;
 
-    // --- floors and walls ---
     for (int gy = 0; gy < d.height; gy++) {
         for (int gx = 0; gx < d.width; gx++) {
             // world center of this tile on the X/Z plane
@@ -88,109 +86,134 @@ inline DungeonLayout buildDungeonLayout(const Dungeon& d, const DungeonParams& p
             float cz = gy * t + t * 0.5f;
 
             if (d.get(gx, gy) == FLOOR) {
-                // a thin slab, with its TOP surface at y = 0 (so its center is a bit below 0)
+                // thin slab with its TOP at y = 0, so its center is a bit below 0
                 glm::vec3 size(t, p.floorThickness, t);
                 glm::vec3 center(cx, -p.floorThickness * 0.5f, cz);
                 layout.boxes.push_back(makeBox(center, size, MAT_FLOOR));
 
-                // a matching ceiling slab on TOP of the walls (its bottom at y = wallHeight),
-                // so the dungeon is closed overhead
+                // same slab on top of the walls (bottom at y = wallHeight): the dungeon is closed
                 glm::vec3 ceilCenter(cx, p.wallHeight + p.floorThickness * 0.5f, cz);
                 layout.boxes.push_back(makeBox(ceilCenter, size, MAT_CEILING));
             }
             else {
-                // a wall, but only if it borders some walkable space
                 if (isWallVisible(d, gx, gy)) {
                     glm::vec3 size(t, p.wallHeight, t);
-                    glm::vec3 center(cx, p.wallHeight * 0.5f, cz);   // standing on the floor (y = 0..wallHeight)
+                    glm::vec3 center(cx, p.wallHeight * 0.5f, cz);
                     layout.boxes.push_back(makeBox(center, size, MAT_WALL));
                 }
             }
         }
     }
 
-    // --- lights ---
-    // No per-room "fill" lights here any more: EVERY light in the scene is an actual fire prop (a
-    // wall/corridor torch or a brazier), added in props.h. That way every light source has a visible
-    // mesh AND fire particles - no invisible, mesh-less lights. (A room's central brazier gets its
-    // own light in props.h; the showpiece room is lit by its flanking braziers + the wall torches.)
-    // So layout.lights is left empty here and filled entirely on the props side.
-
     return layout;
 }
 
-// ---------------------------------------------------------------------------------------------
-// PART 2 - OpenGL geometry (needs an active context)
-// ---------------------------------------------------------------------------------------------
-
-// Build a unit cube mesh (centered on the origin, going from -0.5 to +0.5 on each axis).
-// Every face has its own 4 vertices, so each face can have its own (flat) normal.
+// Unit cube centered on the origin (from -0.5 to +0.5 on each axis). Every face has its own 4
+// vertices so it can have its own flat normal: 24 vertices instead of 8.
 inline Mesh makeCubeMesh() {
     std::vector<Vertex> vertices;
     std::vector<GLuint> indices;
 
-    // helper that adds one square face given its 4 corners (a,b,c,d, counter-clockwise seen
-    // from outside) and the face normal.
+    // add one face given its 4 corners (counter-clockwise seen from outside) and its normal.
+    // Tangent and Bitangent stay at 0.
     auto addFace = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d, glm::vec3 n) {
         GLuint start = (GLuint)vertices.size();
 
-        // the 4 corners, with simple uv coordinates. Tangent/Bitangent are left at 0 for now:
-        // we do not need them for the basic shading of M1 (they matter for normal mapping, M2).
-        Vertex v0; v0.Position = a; v0.Normal = n; v0.TexCoords = glm::vec2(0.0f, 0.0f); v0.Tangent = glm::vec3(0.0f); v0.Bitangent = glm::vec3(0.0f);
-        Vertex v1; v1.Position = b; v1.Normal = n; v1.TexCoords = glm::vec2(1.0f, 0.0f); v1.Tangent = glm::vec3(0.0f); v1.Bitangent = glm::vec3(0.0f);
-        Vertex v2; v2.Position = c; v2.Normal = n; v2.TexCoords = glm::vec2(1.0f, 1.0f); v2.Tangent = glm::vec3(0.0f); v2.Bitangent = glm::vec3(0.0f);
-        Vertex v3; v3.Position = d; v3.Normal = n; v3.TexCoords = glm::vec2(0.0f, 1.0f); v3.Tangent = glm::vec3(0.0f); v3.Bitangent = glm::vec3(0.0f);
+        Vertex v0;
+        v0.Position = a;
+        v0.Normal = n;
+        v0.TexCoords = glm::vec2(0.0f, 0.0f);
+        v0.Tangent = glm::vec3(0.0f);
+        v0.Bitangent = glm::vec3(0.0f);
+
+        Vertex v1;
+        v1.Position = b;
+        v1.Normal = n;
+        v1.TexCoords = glm::vec2(1.0f, 0.0f);
+        v1.Tangent = glm::vec3(0.0f);
+        v1.Bitangent = glm::vec3(0.0f);
+
+        Vertex v2;
+        v2.Position = c;
+        v2.Normal = n;
+        v2.TexCoords = glm::vec2(1.0f, 1.0f);
+        v2.Tangent = glm::vec3(0.0f);
+        v2.Bitangent = glm::vec3(0.0f);
+
+        Vertex v3;
+        v3.Position = d;
+        v3.Normal = n;
+        v3.TexCoords = glm::vec2(0.0f, 1.0f);
+        v3.Tangent = glm::vec3(0.0f);
+        v3.Bitangent = glm::vec3(0.0f);
+
         vertices.push_back(v0);
         vertices.push_back(v1);
         vertices.push_back(v2);
         vertices.push_back(v3);
 
         // two triangles: (0,1,2) and (0,2,3)
-        indices.push_back(start + 0); indices.push_back(start + 1); indices.push_back(start + 2);
-        indices.push_back(start + 0); indices.push_back(start + 2); indices.push_back(start + 3);
+        indices.push_back(start + 0);
+        indices.push_back(start + 1);
+        indices.push_back(start + 2);
+        indices.push_back(start + 0);
+        indices.push_back(start + 2);
+        indices.push_back(start + 3);
     };
 
-    // the 6 faces of the cube
-    addFace({-0.5f,-0.5f, 0.5f}, { 0.5f,-0.5f, 0.5f}, { 0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}, { 0, 0, 1}); // front  +Z
-    addFace({ 0.5f,-0.5f,-0.5f}, {-0.5f,-0.5f,-0.5f}, {-0.5f, 0.5f,-0.5f}, { 0.5f, 0.5f,-0.5f}, { 0, 0,-1}); // back   -Z
-    addFace({ 0.5f,-0.5f, 0.5f}, { 0.5f,-0.5f,-0.5f}, { 0.5f, 0.5f,-0.5f}, { 0.5f, 0.5f, 0.5f}, { 1, 0, 0}); // right  +X
-    addFace({-0.5f,-0.5f,-0.5f}, {-0.5f,-0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f,-0.5f}, {-1, 0, 0}); // left   -X
-    addFace({-0.5f, 0.5f, 0.5f}, { 0.5f, 0.5f, 0.5f}, { 0.5f, 0.5f,-0.5f}, {-0.5f, 0.5f,-0.5f}, { 0, 1, 0}); // top    +Y
-    addFace({-0.5f,-0.5f,-0.5f}, { 0.5f,-0.5f,-0.5f}, { 0.5f,-0.5f, 0.5f}, {-0.5f,-0.5f, 0.5f}, { 0,-1, 0}); // bottom -Y
+    // front +Z, back -Z, right +X, left -X, top +Y, bottom -Y
+    addFace({-0.5f,-0.5f, 0.5f}, { 0.5f,-0.5f, 0.5f}, { 0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}, { 0, 0, 1});
+    addFace({ 0.5f,-0.5f,-0.5f}, {-0.5f,-0.5f,-0.5f}, {-0.5f, 0.5f,-0.5f}, { 0.5f, 0.5f,-0.5f}, { 0, 0,-1});
+    addFace({ 0.5f,-0.5f, 0.5f}, { 0.5f,-0.5f,-0.5f}, { 0.5f, 0.5f,-0.5f}, { 0.5f, 0.5f, 0.5f}, { 1, 0, 0});
+    addFace({-0.5f,-0.5f,-0.5f}, {-0.5f,-0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f,-0.5f}, {-1, 0, 0});
+    addFace({-0.5f, 0.5f, 0.5f}, { 0.5f, 0.5f, 0.5f}, { 0.5f, 0.5f,-0.5f}, {-0.5f, 0.5f,-0.5f}, { 0, 1, 0});
+    addFace({-0.5f,-0.5f,-0.5f}, { 0.5f,-0.5f,-0.5f}, { 0.5f,-0.5f, 0.5f}, {-0.5f,-0.5f, 0.5f}, { 0,-1, 0});
 
-    // the Mesh constructor uploads everything to the GPU (it MOVES the two vectors)
+    // the Mesh constructor moves the two vectors and uploads them to the GPU
     return Mesh(vertices, indices);
 }
 
-// Build the full Scene from a layout: one cube mesh + one RenderObject per box + the lights.
+// Build the Scene from the layout: one shared cube mesh, the three surface materials and one
+// RenderObject per box.
 inline Scene buildScene(const DungeonLayout& layout) {
     Scene scene;
 
-    // mesh index 0 = the unit cube, reused (scaled/translated) by every object
+    // mesh 0 = the unit cube, reused by every box with its own model matrix
     scene.meshes.push_back(makeCubeMesh());
 
-    // the three surface materials, in a fixed order: 0 = floor, 1 = wall, 2 = ceiling.
-    // (props.h will append its own materials after these, starting at index 3.)
-    Material floorMat;   floorMat.albedo   = loadTexture("assets/textures/floor_albedo.png");   floorMat.uvScale = 2.0f; floorMat.roughness = 0.9f;
-    Material wallMat;    wallMat.albedo    = loadTexture("assets/textures/wall_albedo.png");    wallMat.uvScale  = 2.0f; wallMat.roughness  = 0.85f;
-    Material ceilingMat; ceilingMat.albedo = loadTexture("assets/textures/ceiling_albedo.png"); ceilingMat.uvScale = 2.0f; ceilingMat.roughness = 0.9f;
-    scene.materials.push_back(floorMat);     // index 0
-    scene.materials.push_back(wallMat);      // index 1
-    scene.materials.push_back(ceilingMat);   // index 2
+    // surface materials in a fixed order: 0 = floor, 1 = wall, 2 = ceiling.
+    // props.h appends the prop materials after these.
+    Material floorMat;
+    floorMat.albedo = loadTexture("assets/textures/floor_albedo.png");
+    floorMat.uvScale = 2.0f;
+    floorMat.roughness = 0.9f;
+
+    Material wallMat;
+    wallMat.albedo = loadTexture("assets/textures/wall_albedo.png");
+    wallMat.uvScale = 2.0f;
+    wallMat.roughness = 0.85f;
+
+    Material ceilingMat;
+    ceilingMat.albedo = loadTexture("assets/textures/ceiling_albedo.png");
+    ceilingMat.uvScale = 2.0f;
+    ceilingMat.roughness = 0.9f;
+
+    scene.materials.push_back(floorMat);
+    scene.materials.push_back(wallMat);
+    scene.materials.push_back(ceilingMat);
 
     scene.objects.reserve(layout.boxes.size());
     for (const BoxPlacement& box : layout.boxes) {
         RenderObject obj;
         obj.meshIndex = 0;
-        // model matrix = move to the center, then scale the unit cube to the box size.
-        // (glm applies these right-to-left, so the cube is scaled first and then translated.)
+        // translate * scale: glm applies them right to left, so the unit cube is first scaled
+        // to the box size and then moved to its center
         glm::mat4 m(1.0f);
         m = glm::translate(m, box.center);
         m = glm::scale(m, box.size);
         obj.modelMatrix = m;
         obj.worldBounds = box.bounds;
         obj.material = box.material;
-        // pick the surface material index from the kind
         obj.materialIndex = (box.material == MAT_FLOOR) ? 0 : (box.material == MAT_WALL) ? 1 : 2;
         scene.objects.push_back(obj);
     }

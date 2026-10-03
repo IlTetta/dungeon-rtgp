@@ -7,18 +7,16 @@
 //   2. recursively split it in two smaller rectangles (a random horizontal or vertical cut),
 //      until the pieces are small enough;
 //   3. in each smallest piece ("leaf") carve a room (a smaller rectangle of FLOOR);
-//   4. while coming back up from the recursion, connect the room of the left side with the
-//      room of the right side using a corridor -> this guarantees the whole dungeon is
-//      connected (you can always walk from any room to any other).
+//   4. while coming back up from the recursion, connect a room of the first half with a
+//      room of the second half using a corridor. Every split gets joined this way, so the
+//      whole dungeon is always connected.
 //
-// The result is a 2D grid of tiles (WALL / FLOOR). This file is PURE standard C++ (no OpenGL,
-// no glm) on purpose, so we can generate and print the dungeon in the console and check that
-// the logic is correct before turning it into 3D geometry.
+// The result is a 2D grid of tiles (WALL / FLOOR).
 
 #include <vector>
 #include <random>
 #include <iostream>
-#include <algorithm>   // std::min, std::max
+#include <algorithm>
 
 // A tile of the map. WALL is the "solid" default, FLOOR is where the player can walk.
 enum Tile {
@@ -40,10 +38,15 @@ struct Dungeon {
     int width = 0;
     int height = 0;
     std::vector<Tile> tiles;
-    std::vector<Rect> rooms;   // the rooms we carved (in grid coordinates); used to place lights
+    std::vector<Rect> rooms;   // the carved rooms, in grid coordinates (used for props, lights, spawn)
 
-    Tile get(int x, int y) const { return tiles[y * width + x]; }
-    void set(int x, int y, Tile t) { tiles[y * width + x] = t; }
+    Tile get(int x, int y) const {
+        return tiles[y * width + x];
+    }
+
+    void set(int x, int y, Tile t) {
+        tiles[y * width + x] = t;
+    }
 };
 
 class DungeonGenerator {
@@ -80,8 +83,8 @@ private:
     Rect splitAndBuild(Rect area, int depth) {
         // can we still split this area? we can only split along a side that is at least twice
         // the minimum leaf size (so that BOTH halves are still big enough).
-        bool canSplitVertically = area.w >= 2 * minLeafSize;   // cut the width  -> left | right
-        bool canSplitHorizontally = area.h >= 2 * minLeafSize; // cut the height -> top / bottom
+        bool canSplitVertically = area.w >= 2 * minLeafSize;    // cut the width: left | right
+        bool canSplitHorizontally = area.h >= 2 * minLeafSize;  // cut the height: top / bottom
 
         // stop condition: too deep, or the area is too small to be split anymore
         if (depth >= maxDepth || (!canSplitVertically && !canSplitHorizontally)) {
@@ -101,14 +104,14 @@ private:
         if (cutVertically) {
             // pick a vertical cut position, keeping at least minLeafSize on both sides
             int cut = randRange(minLeafSize, area.w - minLeafSize);
-            first  = { area.x,         area.y, cut,             area.h };
-            second = { area.x + cut,   area.y, area.w - cut,    area.h };
+            first  = { area.x, area.y, cut, area.h };
+            second = { area.x + cut, area.y, area.w - cut, area.h };
         }
         else {
             // horizontal cut
             int cut = randRange(minLeafSize, area.h - minLeafSize);
-            first  = { area.x, area.y,         area.w, cut };
-            second = { area.x, area.y + cut,   area.w, area.h - cut };
+            first  = { area.x, area.y, area.w, cut };
+            second = { area.x, area.y + cut, area.w, area.h - cut };
         }
 
         // recurse on both halves; each returns one of its rooms
@@ -118,7 +121,7 @@ private:
         // dig a corridor between the two rooms so the two halves are connected
         connect(roomA, roomB);
 
-        // pass one room up, so the level above can connect this whole block to its sibling
+        // pass one room up, so the level above can connect this whole block to its sibling.
         return roomA;
     }
 
@@ -137,7 +140,7 @@ private:
             for (int x = roomX; x < roomX + roomW; x++)
                 dungeon.set(x, y, FLOOR);
 
-        // remember this room (so later we can place a torch in it)
+        // remember the room: props, lights and the spawn point are placed per room later
         Rect room = { roomX, roomY, roomW, roomH };
         dungeon.rooms.push_back(room);
         return room;
@@ -180,19 +183,20 @@ private:
 
     // Return a random integer between lo and hi, both included.
     int randRange(int lo, int hi) {
-        if (lo >= hi) return lo;   // safety, in case the range is empty
+        if (lo >= hi)
+            return lo;   // safety, in case the range is empty
         std::uniform_int_distribution<int> dist(lo, hi);
         return dist(rng);
     }
 
     int width;
     int height;
-    std::mt19937 rng;        // the random number generator (Mersenne Twister, from <random>)
-    Dungeon dungeon;         // the map we are building
+    std::mt19937 rng;   // Mersenne Twister, seeded once so the whole generation is repeatable
+    Dungeon dungeon;    // the map we are building
 
     // tuning parameters of the generation
-    int minLeafSize = 8;     // an area smaller than this is not split further
-    int maxDepth = 4;        // how many times, at most, we split (controls number of rooms)
+    int minLeafSize = 8;   // both halves of a split must be at least this big
+    int maxDepth = 4;   // max recursion depth, so at most 2^4 = 16 rooms
 };
 
 // Print the dungeon to the console as ASCII art: '#' for walls, '.' for floor.
