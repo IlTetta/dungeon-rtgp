@@ -188,3 +188,9 @@ benchmarks/    recorded reference camera path
 - Surface textures: **ambientCG** (CC0).
 - Other props (columns, crates, barrels, urns, braziers, torches, chains, rubble, altar) modelled and baked in Blender for this project.
 - Libraries: [GLFW](https://www.glfw.org/), [GLAD](https://github.com/Dav1dde/glad), [GLM](https://github.com/g-truc/glm), [Dear ImGui](https://github.com/ocornut/imgui), [stb_image](https://github.com/nothings/stb).
+
+---
+
+## License
+
+The source code is released under the [MIT License](LICENSE). Third-party libraries in `external/` and `libs/` keep their own licenses, and the statue model stays under CC-BY (see Credits).
