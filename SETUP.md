@@ -114,16 +114,7 @@ La scena la costruisce il codice di `world/` e il renderer la legge soltanto (`c
 
 ---
 
-## 7. Flusso git
-
-- `main`: progetto completo, sempre compilabile; i tag `M2`, `M3` segnano le milestone.
-- `feat/andrea`, `feat/lorenzo`: i branch di lavoro di ciascuno.
-- I file condivisi (`src/core/`, `src/engine/`, `main.cpp`, `CMakeLists.txt`) si modificano
-  d'accordo, così i merge restano puliti.
-
----
-
-## 8. Se qualcosa non va
+## 7. Se qualcosa non va
 
 - **CMake: "could not find any instance of Visual Studio"** → manca il workload C++.
 - **Errori di link su GLFW / `LNK2019`** → stai compilando a 32 bit o con MinGW: serve
