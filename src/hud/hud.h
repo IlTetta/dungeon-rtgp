@@ -210,6 +210,8 @@ private:
             ImGui::Checkbox("Show frustum wireframe", &s.showFrustumWire);
             ImGui::Checkbox("Follow player rotation", &s.debugCamFollowYaw);
             ImGui::SliderFloat("Cam height", &s.debugCamHeight, 10.0f, 90.0f);
+            ImGui::SliderFloat("Spectator light", &s.renderer.spectatorLight, 0.0f, 2.0f);
+            ImGui::Checkbox("Fog in spectator view", &s.renderer.spectatorFog);
         }
 
         ImGui::Separator();

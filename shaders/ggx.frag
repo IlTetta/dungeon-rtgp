@@ -56,6 +56,7 @@ const float PI = 3.14159265359;
 // Tunable from the ImGui panel (Renderer::ShadingTuning) instead of hardcoded, so we can
 // dial them in without recompiling.
 uniform float ambient;
+uniform float fillLight;   // spectator view only, 0 in the player view
 uniform float spotBiasMax;
 uniform float spotBiasMin;
 uniform float spotNormalOffset;
@@ -192,5 +193,8 @@ void main() {
     // maps already handle direct occlusion for their own lights).
     float ao = ssaoOn ? texture(ssaoMap, gl_FragCoord.xy / screenSize).r : 1.0;
     vec3 ambientColor = ambient * baseColor * ao;
-    FragColor = vec4(ambientColor + Lo, 1.0);
+    // Spectator view only: a soft light coming from the camera, so the overhead view is
+    // readable. Surfaces facing the camera get the most, the others still get a little.
+    vec3 fillColor = fillLight * baseColor * (0.3 + 0.7 * NdotV);
+    FragColor = vec4(ambientColor + Lo + fillColor, 1.0);
 }

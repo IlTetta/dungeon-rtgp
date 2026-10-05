@@ -59,18 +59,19 @@ void Renderer::render(const Scene& scene, Camera& camera, FrameMetrics& metrics)
     // Normal (player) path: draw from the camera and cull against that same camera's
     // frustum, built here from this frame's view-projection.
     Frustum frustum = extractFrustum(projection * camera.getViewMatrix());
-    renderInternal(scene, camera.getViewMatrix(), camera.Position, frustum, /*hideCeiling*/false, metrics);
+    renderInternal(scene, camera.getViewMatrix(), camera.Position, frustum, /*hideCeiling*/false,
+                   /*spectator*/false, metrics);
 }
 
 void Renderer::renderSpectator(const Scene& scene, const glm::mat4& view, const glm::vec3& eye,
     const Frustum& cullFrustum, bool hideCeiling, FrameMetrics& metrics) {
     // Debug path: draw from `view`/`eye` (the far spectator camera) but cull against the
     // frozen `cullFrustum` we were handed (the player's). Same drawing core as render().
-    renderInternal(scene, view, eye, cullFrustum, hideCeiling, metrics);
+    renderInternal(scene, view, eye, cullFrustum, hideCeiling, /*spectator*/true, metrics);
 }
 
 void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const glm::vec3& eye,
-    const Frustum& cullFrustum, bool hideCeiling, FrameMetrics& metrics) {
+    const Frustum& cullFrustum, bool hideCeiling, bool spectator, FrameMetrics& metrics) {
     metrics.drawCalls = 0;
     metrics.trianglesDrawn = 0;
     metrics.objectsDrawn = 0;
@@ -195,6 +196,7 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     shader.setVec3("viewPos", eye);   // ggx.frag needs this to build V
 
     shader.setFloat("ambient", tuning.ambient);
+    shader.setFloat("fillLight", spectator ? spectatorLight : 0.0f);   // spectator view only
     shader.setFloat("spotBiasMax", tuning.spotBiasMax);
     shader.setFloat("spotBiasMin", tuning.spotBiasMin);
     shader.setFloat("spotNormalOffset", tuning.spotNormalOffset);
@@ -444,7 +446,7 @@ void Renderer::renderInternal(const Scene& scene, const glm::mat4& view, const g
     glm::mat4 invViewProj = glm::inverse(projection * view);
     fog.render(sceneFBO, scene, eye, invViewProj, fogLightIndex, fogLightIntensity,
                viewportWidth, viewportHeight,
-               { tuning.fogEnabled, tuning.fogColor, tuning.fogDensity, tuning.fogScatter,
+               { tuning.fogEnabled && (!spectator || spectatorFog), tuning.fogColor, tuning.fogDensity, tuning.fogScatter,
                  tuning.fogMaxDistance, tuning.fogSteps }, metrics);
 }
 

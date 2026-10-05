@@ -64,6 +64,13 @@ public:
     // Default true = normal lighting.
     bool directLightsEnabled = true;
 
+    // Spectator camera (V) only. From up there every torch is far away and the view goes through
+    // a long stretch of fog, so the picture was almost black. spectatorLight adds a soft light
+    // from the spectator camera itself, and spectatorFog = false skips the fog in that view.
+    // The player view is never affected.
+    float spectatorLight = 0.8f;
+    bool spectatorFog = false;
+
     // Live-tunable shading/shadow constants, sent to the shaders as uniforms every frame (see
     // renderInternal()). The HUD (hud/hud.h) exposes them, to dial them in without recompiling;
     // the defaults below are what looked right during testing.
@@ -201,7 +208,8 @@ private:
     // skipping ceilings. `eye` is both the camera position sent to the shader and the point
     // we pick the nearest shadow-casting lights around.
     void renderInternal(const Scene& scene, const glm::mat4& view, const glm::vec3& eye,
-                        const Frustum& cullFrustum, bool hideCeiling, FrameMetrics& metrics);
+                        const Frustum& cullFrustum, bool hideCeiling, bool spectator,
+                        FrameMetrics& metrics);
 
     Shader shader;
     glm::mat4 projection;
