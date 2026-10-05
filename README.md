@@ -8,7 +8,9 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D6?logo=windows&logoColor=white)
 ![CMake](https://img.shields.io/badge/build-CMake-064F8C?logo=cmake&logoColor=white)
 
-![Torch lit room with columns, braziers, barrels and crates](docs/images/dungeon_overview.png)
+<p align="center">
+  <img src="docs/images/hero.gif" width="800" alt="Walking through a torch lit room with columns, braziers, barrels and crates">
+</p>
 
 A first-person walkthrough of a procedurally generated dungeon lit only by fire: wall torches and braziers, physically based shading, real-time shadows, ambient occlusion and volumetric fog. No game engine, no Assimp, no physics library: the OBJ loader, the collision system, the chain physics and the renderer are all our own code on top of raw OpenGL.
 
@@ -33,6 +35,21 @@ The goal of the project was not only to make it look good, but to **measure** it
 
 ---
 
+## In motion
+
+<table>
+  <tr>
+    <td><img src="docs/images/procedural.gif" alt="Regenerating the dungeon from new seeds"></td>
+    <td><img src="docs/images/verlet_chains.gif" alt="Verlet chains swinging as the player walks through them"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>A new dungeon from every seed, rebuilt live from the HUD</sub></td>
+    <td align="center"><sub>Verlet chains reacting to the player</sub></td>
+  </tr>
+</table>
+
+---
+
 ## Gallery
 
 <table>
@@ -46,11 +63,11 @@ The goal of the project was not only to make it look good, but to **measure** it
   </tr>
   <tr>
     <td><img src="docs/images/shadows_point.png" alt="Point light shadows"></td>
-    <td><img src="docs/images/culling_debug.png" alt="Frustum culling debug view"></td>
+    <td><img src="docs/images/dungeon_overview.png" alt="Torch lit room with columns, braziers, barrels and crates"></td>
   </tr>
   <tr>
     <td align="center"><sub>Omnidirectional shadows from a brazier (distance cubemap)</sub></td>
-    <td align="center"><sub>Spectator camera: only what is inside the player's frustum is drawn</sub></td>
+    <td align="center"><sub>Pillared hall lit by wall torches and braziers</sub></td>
   </tr>
 </table>
 
@@ -93,6 +110,11 @@ Every configuration was replayed on the same recorded 50 s path (seed 12345), **
 | Per-object structural geometry | 689 | 196k | 23.66 ms |
 | **Structural instancing** | **88** | 196k | **23.92 ms** (no change) |
 
+<p align="center">
+  <img src="docs/images/frustum_culling.gif" width="800" alt="Spectator camera showing frustum culling">
+  <br><sub>Spectator camera (V): only what is inside the player's frustum (yellow) is drawn, while the HUD counts the draw calls</sub>
+</p>
+
 Frustum culling removes 70% of the draw calls and almost 60% of the triangles, yet the frame only gets about 12% faster. Structural instancing cuts draw calls by a factor of 8 and the frame time does not move at all. Frame time and draw calls are only weakly correlated (Pearson r = 0.20). The renderer is **not CPU/submission bound**.
 
 <table>
@@ -118,6 +140,11 @@ Frustum culling removes 70% of the draw calls and almost 60% of the triangles, y
     <td align="center"><sub>SPOT shadow casters 1 → 8: 22.2 → 24.8 ms</sub></td>
   </tr>
 </table>
+
+<p align="center">
+  <img src="docs/images/fog_steps.gif" width="640" alt="Changing the fog ray-march steps live while the frame time graph reacts">
+  <br><sub>Raising the fog ray-march steps live: the frame time graph in the HUD climbs with them</sub>
+</p>
 
 The real levers are **per-pixel work** (the fog ray march scales linearly with the number of steps) and **shadow passes**. The conclusion holds on two more dungeons with very different layouts:
 
